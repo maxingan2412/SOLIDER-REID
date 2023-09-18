@@ -82,3 +82,5 @@ class Market1501(BaseImageDataset):
 
             dataset.append((img_path, self.pid_begin + pid, camid, 1))
         return dataset
+
+

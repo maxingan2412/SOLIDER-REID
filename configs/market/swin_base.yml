@@ -20,7 +20,8 @@ INPUT:
 
 DATASETS:
   NAMES: ('market1501')
-  ROOT_DIR: ('path/to/market1501/datasets')
+#  ROOT_DIR: ('path/to/market1501/datasets')
+  ROOT_DIR: ('/home/ma1/work/data')
 
 DATALOADER:
   SAMPLER: 'softmax_triplet'
@@ -44,7 +45,7 @@ SOLVER:
 
 TEST:
   EVAL: True
-  IMS_PER_BATCH: 256
+  IMS_PER_BATCH: 512
   RE_RANKING: False
   WEIGHT: ''
   NECK_FEAT: 'before'

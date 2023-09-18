@@ -20,7 +20,8 @@ INPUT:
 
 DATASETS:
   NAMES: ('msmt17')
-  ROOT_DIR: ('path/to/msmt17/datasets')
+  #ROOT_DIR: ('path/to/msmt17/datasets')
+  ROOT_DIR: ('/home/ma1/work/data')
 
 DATALOADER:
   SAMPLER: 'softmax_triplet'
