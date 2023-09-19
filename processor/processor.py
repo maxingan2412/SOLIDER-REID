@@ -50,6 +50,7 @@ def do_train(cfg,
         acc_meter.reset()
         evaluator.reset()
         model.train()
+        #
         for n_iter, (img, vid, target_cam, target_view) in enumerate(tqdm(train_loader)):
             optimizer.zero_grad()
             optimizer_center.zero_grad()
@@ -105,6 +106,10 @@ def do_train(cfg,
                     .format(epoch, time_per_batch * (n_iter + 1), train_loader.batch_size / time_per_batch))
 
         if epoch % checkpoint_period == 0:
+            # Ensure directory exists; if not, create it
+            if not os.path.exists(cfg.OUTPUT_DIR):
+                os.makedirs(cfg.OUTPUT_DIR)
+
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
                     torch.save(model.state_dict(),
