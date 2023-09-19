@@ -10,10 +10,12 @@ from .msmt17 import MSMT17
 from .sampler_ddp import RandomIdentitySampler_DDP
 import torch.distributed as dist
 from .mm import MM
+from .MARS_dataset import Mars
 __factory = {
     'market1501': Market1501,
     'msmt17': MSMT17,
     'mm': MM,
+    'mars': Mars,
 }
 
 def train_collate_fn(batch):
@@ -51,10 +53,16 @@ def make_dataloader(cfg):
 
     num_workers = cfg.DATALOADER.NUM_WORKERS
 
-    if cfg.DATASETS.NAMES == 'ourapi':
-        dataset = OURAPI(root_train=cfg.DATASETS.ROOT_TRAIN_DIR, root_val=cfg.DATASETS.ROOT_VAL_DIR, config=cfg)
+    # if cfg.DATASETS.NAMES == 'ourapi':
+    #     dataset = OURAPI(root_train=cfg.DATASETS.ROOT_TRAIN_DIR, root_val=cfg.DATASETS.ROOT_VAL_DIR, config=cfg)
+    # else:
+    #     dataset = __factory[cfg.DATASETS.NAMES](root=cfg.DATASETS.ROOT_DIR)
+
+    if cfg.DATASETS.NAMES == 'mars':
+        dataset = Mars()
     else:
         dataset = __factory[cfg.DATASETS.NAMES](root=cfg.DATASETS.ROOT_DIR)
+
 
     train_set = ImageDataset(dataset.train, train_transforms)
     train_set_normal = ImageDataset(dataset.train, val_transforms)
