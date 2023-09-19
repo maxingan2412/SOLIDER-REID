@@ -53,9 +53,9 @@ def do_train(cfg,
         for n_iter, (img, vid, target_cam, target_view) in enumerate(tqdm(train_loader)):
             optimizer.zero_grad()
             optimizer_center.zero_grad()
-            img = img.to(device)
-            target = vid.to(device)
-            target_cam = target_cam.to(device)
+            img = img.to(device) # bs 3,h,w tensor
+            target = vid.to(device) # bs tensor
+            target_cam = target_cam.to(device) # bs tensor
             target_view = target_view.to(device)
             with amp.autocast(enabled=True):
                 score, feat, _ = model(img, label=target, cam_label=target_cam, view_label=target_view )
@@ -71,7 +71,7 @@ def do_train(cfg,
                     param.grad.data *= (1. / cfg.SOLVER.CENTER_LOSS_WEIGHT)
                 scaler.step(optimizer_center)
                 scaler.update()
-            if isinstance(score, list):
+            if isinstance(score, list): #这里的acc也就是 这一个batch中 我用模型得到的id和实际的id的准确率
                 acc = (score[0].max(1)[1] == target).float().mean()
             else:
                 acc = (score.max(1)[1] == target).float().mean()

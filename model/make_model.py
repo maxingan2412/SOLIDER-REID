@@ -227,7 +227,7 @@ class build_transformer(nn.Module):
 
         #if pretrain_choice == 'self':
         #    self.load_param(model_path)
-
+    # input : x tensor bs,3,h,w | label tensor bs  cam_label tensor bs, view_label tensor bs   . x是一个batch的 img label 是personid ， camlabel是camid viewlabel是viewid，在market1501中，camid是1-6，viewid是1-6，personid都是1
     def forward(self, x, label=None, cam_label= None, view_label=None):
         global_feat, featmaps = self.base(x)
         if self.reduce_feat_dim:
@@ -240,7 +240,7 @@ class build_transformer(nn.Module):
                 cls_score = self.classifier(feat_cls, label)
             else:
                 cls_score = self.classifier(feat_cls)
-
+            # output cls_score tensor bs pid_num(625) , global_feat bs 1024, featmaps list 4 features 128 96 32 ,  256 48 16, 512 24 8, 1024 12 4
             return cls_score, global_feat, featmaps  # global feature for triplet loss
         else:
             if self.neck_feat == 'after':
