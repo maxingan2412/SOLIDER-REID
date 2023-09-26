@@ -31,8 +31,7 @@ TEST.IMS_PER_BATCH 2000 \
 DATALOADER.NUM_WORKERS 24 \
 SOLVER.EVAL_PERIOD 1 \
 SOLVER.CHECKPOINT_PERIOD 29 \
-MODEL.DEVICE_ID 0,1 \
-MODEL.DIST_TRAIN True > "$LOG_FILE" 2>&1 &
+MODEL.DIST_TRAIN False > "$LOG_FILE" 2>&1 &
 
 # 输出日志文件路径
 echo "训练日志文件已保存到：$LOG_FILE"
@@ -42,4 +41,3 @@ if [ $? -eq 0 ]; then
 else
     echo "训练失败，请查看日志文件以获取详细信息：$LOG_FILE"
 fi
-

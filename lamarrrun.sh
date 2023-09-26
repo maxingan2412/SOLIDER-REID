@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=swinmars
+#SBATCH --job-name=mars1
 #SBATCH --time=72:00:00
-#SBATCH --gpus=2
+#SBATCH --gpus=1
 #SBATCH --cpus-per-task=24
-#SBATCH --output=out/swinmars-%j.out
-#SBATCH --error=out/swinmars-%j.err
+#SBATCH --output=out/mars1-%j.out
+#SBATCH --error=out/mars1-%j.err
 
 # 检查并创建输出目录
 OUT_DIR="out"
@@ -62,5 +62,5 @@ TEST.IMS_PER_BATCH 2000 \
 DATALOADER.NUM_WORKERS 24 \
 SOLVER.EVAL_PERIOD 30 \
 SOLVER.CHECKPOINT_PERIOD 29 \
-MODEL.DIST_TRAIN True
+
 
