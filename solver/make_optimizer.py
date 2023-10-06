@@ -6,8 +6,8 @@ def make_optimizer(cfg, model, center_criterion):
     for key, value in model.named_parameters():
         if not value.requires_grad:
             continue
-        lr = cfg.SOLVER.BASE_LR
-        weight_decay = cfg.SOLVER.WEIGHT_DECAY
+        lr = cfg.SOLVER.BASE_LR #vid 0.008 vs 0.0002
+        weight_decay = cfg.SOLVER.WEIGHT_DECAY # 和vi相同
         if "bias" in key:
             lr = cfg.SOLVER.BASE_LR * cfg.SOLVER.BIAS_LR_FACTOR
             weight_decay = cfg.SOLVER.WEIGHT_DECAY_BIAS

@@ -80,7 +80,7 @@ class Market1501(BaseImageDataset):
             camid -= 1  # index starts from 0
             if relabel: pid = pid2label[pid]
 
-            dataset.append((img_path, self.pid_begin + pid, camid, 1))
+            dataset.append((img_path, self.pid_begin + pid, camid, 1))  # 这里定义了datasets.train 里面数据格式 也就是一个大的list 里面4元祖  对应这里面4个东西
         return dataset
 
 

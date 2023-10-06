@@ -259,6 +259,110 @@ class build_transformer(nn.Module):
                 continue
         print('Loading pretrained model from {}'.format(trained_path))
 
+class build_mars_transformer(nn.Module):
+    def __init__(self, num_classes, camera_num, view_num, cfg, factory, semantic_weight):
+        super(build_mars_transformer, self).__init__()
+        last_stride = cfg.MODEL.LAST_STRIDE
+        model_path = cfg.MODEL.PRETRAIN_PATH
+        model_name = cfg.MODEL.NAME
+        pretrain_choice = cfg.MODEL.PRETRAIN_CHOICE
+        self.cos_layer = cfg.MODEL.COS_LAYER
+        self.neck = cfg.MODEL.NECK
+        self.neck_feat = cfg.TEST.NECK_FEAT
+        self.reduce_feat_dim = cfg.MODEL.REDUCE_FEAT_DIM
+        self.feat_dim = cfg.MODEL.FEAT_DIM
+        self.dropout_rate = cfg.MODEL.DROPOUT_RATE
+
+        print('using Transformer_type: {} as a backbone'.format(cfg.MODEL.TRANSFORMER_TYPE))
+
+        if cfg.MODEL.SIE_CAMERA: #使用  swin就没法用 camera信息
+            camera_num = camera_num
+        else:
+            camera_num = 0
+        if cfg.MODEL.SIE_VIEW:
+            view_num = view_num
+        else:
+            view_num = 0
+
+        convert_weights = True if pretrain_choice == 'imagenet' else False
+        self.base = factory[cfg.MODEL.TRANSFORMER_TYPE](img_size=cfg.INPUT.SIZE_TRAIN, drop_path_rate=cfg.MODEL.DROP_PATH, drop_rate= cfg.MODEL.DROP_OUT,attn_drop_rate=cfg.MODEL.ATT_DROP_RATE, pretrained=model_path, convert_weights=convert_weights, semantic_weight=semantic_weight)
+        if model_path != '':
+            self.base.init_weights(model_path)
+        self.in_planes = self.base.num_features[-1]
+
+        self.num_classes = num_classes
+        self.ID_LOSS_TYPE = cfg.MODEL.ID_LOSS_TYPE
+        if self.ID_LOSS_TYPE == 'arcface':
+            print('using {} with s:{}, m: {}'.format(self.ID_LOSS_TYPE,cfg.SOLVER.COSINE_SCALE,cfg.SOLVER.COSINE_MARGIN))
+            self.classifier = Arcface(self.in_planes, self.num_classes,
+                                      s=cfg.SOLVER.COSINE_SCALE, m=cfg.SOLVER.COSINE_MARGIN)
+        elif self.ID_LOSS_TYPE == 'cosface':
+            print('using {} with s:{}, m: {}'.format(self.ID_LOSS_TYPE,cfg.SOLVER.COSINE_SCALE,cfg.SOLVER.COSINE_MARGIN))
+            self.classifier = Cosface(self.in_planes, self.num_classes,
+                                      s=cfg.SOLVER.COSINE_SCALE, m=cfg.SOLVER.COSINE_MARGIN)
+        elif self.ID_LOSS_TYPE == 'amsoftmax':
+            print('using {} with s:{}, m: {}'.format(self.ID_LOSS_TYPE,cfg.SOLVER.COSINE_SCALE,cfg.SOLVER.COSINE_MARGIN))
+            self.classifier = AMSoftmax(self.in_planes, self.num_classes,
+                                        s=cfg.SOLVER.COSINE_SCALE, m=cfg.SOLVER.COSINE_MARGIN)
+        elif self.ID_LOSS_TYPE == 'circle':
+            print('using {} with s:{}, m: {}'.format(self.ID_LOSS_TYPE, cfg.SOLVER.COSINE_SCALE, cfg.SOLVER.COSINE_MARGIN))
+            self.classifier = CircleLoss(self.in_planes, self.num_classes,
+                                        s=cfg.SOLVER.COSINE_SCALE, m=cfg.SOLVER.COSINE_MARGIN)
+        else:
+            if self.reduce_feat_dim:
+                self.fcneck = nn.Linear(self.in_planes, self.feat_dim, bias=False)
+                self.fcneck.apply(weights_init_xavier)
+                self.in_planes = cfg.MODEL.FEAT_DIM
+            self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)
+            self.classifier.apply(weights_init_classifier)
+
+        self.bottleneck = nn.BatchNorm1d(self.in_planes)
+        self.bottleneck.bias.requires_grad_(False)
+        self.bottleneck.apply(weights_init_kaiming)
+
+        self.dropout = nn.Dropout(self.dropout_rate)
+
+        #if pretrain_choice == 'self':
+        #    self.load_param(model_path)
+    # input : x tensor bs,3,h,w | label tensor bs  cam_label tensor bs, view_label tensor bs   . x是一个batch的 img label 是personid ， camlabel是camid viewlabel是viewid，在market1501中，camid是1-6，viewid是1-6，personid都是1
+    def forward(self, x, label=None, cam_label= None, view_label=None):
+        b=x.size(0) # batch size 32
+        t=x.size(1) # seq 4
+        x = x.view(x.size(0)*x.size(1), x.size(2), x.size(3), x.size(4)) #[32,4,3,256,128] --> [128,3,256,128]
+
+
+
+        global_feat, featmaps = self.base(x)
+        if self.reduce_feat_dim:
+            global_feat = self.fcneck(global_feat)
+        feat = self.bottleneck(global_feat)
+        feat_cls = self.dropout(feat)
+
+        if self.training:
+            if self.ID_LOSS_TYPE in ('arcface', 'cosface', 'amsoftmax', 'circle'):
+                cls_score = self.classifier(feat_cls, label)
+            else:
+                cls_score = self.classifier(feat_cls)
+            # output cls_score tensor bs pid_num(625) , global_feat bs 1024, featmaps list 4 features 128 96 32 ,  256 48 16, 512 24 8, 1024 12 4
+            return cls_score, global_feat, featmaps  # global feature for triplet loss
+        else:
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                return feat, featmaps
+            else:
+                # print("Test with feature before BN")
+                return global_feat, featmaps
+
+    def load_param(self, trained_path):
+        param_dict = torch.load(trained_path, map_location = 'cpu')
+        for i in param_dict:
+            try:
+                self.state_dict()[i.replace('module.', '')].copy_(param_dict[i])
+            except:
+                continue
+        print('Loading pretrained model from {}'.format(trained_path))
+
+
 
 class build_transformer_local(nn.Module):
     def __init__(self, num_classes, camera_num, view_num, cfg, factory, rearrange):
@@ -437,12 +541,25 @@ __factory_T_type = {
 
 def make_model(cfg, num_class, camera_num, view_num, semantic_weight):
     if cfg.MODEL.NAME == 'transformer':
-        if cfg.MODEL.JPM:
-            model = build_transformer_local(num_class, camera_num, view_num, cfg, __factory_T_type, rearrange=cfg.MODEL.RE_ARRANGE)
-            print('===========building transformer with JPM module ===========')
+
+        if cfg.DATASETS.NAMES == 'mars':
+            model = build_mars_transformer(num_class, camera_num, view_num, cfg, __factory_T_type, semantic_weight)
+            print('===========building mars transformer===========')
         else:
-            model = build_transformer(num_class, camera_num, view_num, cfg, __factory_T_type, semantic_weight)
-            print('===========building transformer===========')
+            if cfg.MODEL.JPM:
+                model = build_transformer_local(num_class, camera_num, view_num, cfg, __factory_T_type,
+                                                rearrange=cfg.MODEL.RE_ARRANGE)
+                print('===========building transformer with JPM module ===========')
+            else:
+                model = build_transformer(num_class, camera_num, view_num, cfg, __factory_T_type, semantic_weight)
+                print('===========building transformer===========')
+
+        # if cfg.MODEL.JPM:
+        #     model = build_transformer_local(num_class, camera_num, view_num, cfg, __factory_T_type, rearrange=cfg.MODEL.RE_ARRANGE)
+        #     print('===========building transformer with JPM module ===========')
+        # else:
+        #     model = build_transformer(num_class, camera_num, view_num, cfg, __factory_T_type, semantic_weight)
+        #     print('===========building transformer===========')
     else:
         model = Backbone(num_class, cfg)
         print('===========building ResNet===========')

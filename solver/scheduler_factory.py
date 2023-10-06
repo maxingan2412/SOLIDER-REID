@@ -16,7 +16,7 @@ def create_scheduler(cfg, optimizer):
     # lr_min = 0.001 * cfg.SOLVER.BASE_LR
     # warmup_lr_init = 0.01 * cfg.SOLVER.BASE_LR
 
-    warmup_t = cfg.SOLVER.WARMUP_EPOCHS
+    warmup_t = cfg.SOLVER.WARMUP_EPOCHS #vid是5
     noise_range = None
 
     lr_scheduler = CosineLRScheduler(

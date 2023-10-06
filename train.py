@@ -1,5 +1,5 @@
 from utils.logger import setup_logger
-from datasets import make_dataloader
+from datasets import make_dataloader,make_mars_dataloader
 from model import make_model
 from solver import make_optimizer, WarmupMultiStepLR
 from solver.scheduler_factory import create_scheduler
@@ -51,8 +51,8 @@ if __name__ == '__main__':
         pass
 
     logger = setup_logger("transreid", output_dir, if_train=True)
-    logger.info("Saving model in the path :{}".format(cfg.OUTPUT_DIR))
-    #  logger.info(args)
+    logger.info("Saving model in the path :{}".format(cfg.OUTPUT_DIR)) #这个可以在终端打印
+    #logger.info("相关参数".format(args))
 
     if args.config_file != "":
         logger.info("Loaded configuration file {}".format(args.config_file))
@@ -66,7 +66,18 @@ if __name__ == '__main__':
 
 
     os.environ['CUDA_VISIBLE_DEVICES'] = cfg.MODEL.DEVICE_ID
-    train_loader, train_loader_normal, val_loader, num_query, num_classes, camera_num, view_num = make_dataloader(cfg)
+
+    if cfg.DATASETS.NAMES == 'mars':
+        train_loader, num_query, num_classes, camera_num, view_num, q_val_set, g_val_set = make_mars_dataloader(cfg)
+    else:
+        train_loader, train_loader_normal, val_loader, num_query, num_classes, camera_num, view_num = make_dataloader(cfg)
+
+        # train_loader, num_query, num_classes, camera_num, view_num, q_val_set, g_val_set = make_mars_dataloader(cfg.DATASETS.NAMES,
+        #                                                                                               cfg.SOLVER.IMS_PER_BATCH,
+        #                                                                                               4, #seqlen
+        #                                                                                               cfg.DATALOADER.NUM_WORKERS)  # 这里完成了 datloader的组合
+
+    #train_loader, train_loader_normal, val_loader, num_query, num_classes, camera_num, view_num = make_dataloader(cfg)
 
     model = make_model(cfg, num_class=num_classes, camera_num=camera_num, view_num = view_num, semantic_weight = cfg.MODEL.SEMANTIC_WEIGHT)
     loss_func, center_criterion = make_loss(cfg, num_classes=num_classes)

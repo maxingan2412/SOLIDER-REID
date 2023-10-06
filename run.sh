@@ -1,12 +1,13 @@
 # Swin Base
-CUDA_VISIBLE_DEVICES=0 python train.py \
+python train.py \
 --config_file configs/market/swin_base.yml \
 MODEL.PRETRAIN_CHOICE 'self' \
 MODEL.PRETRAIN_PATH 'pretrained_model/checkpoint_tea.pth' \
 OUTPUT_DIR './log/market1501/swin_base' \
 SOLVER.BASE_LR 0.0002 \
 SOLVER.OPTIMIZER_NAME 'SGD' \
-MODEL.SEMANTIC_WEIGHT 0.2
+MODEL.SEMANTIC_WEIGHT 0.2 \
+MODEL.DEVICE_ID 0
 
 # Swin Small
 #CUDA_VISIBLE_DEVICES=0 python train.py --config_file configs/msmt17/swin_small.yml MODEL.PRETRAIN_CHOICE 'self' MODEL.PRETRAIN_PATH 'path/to/SOLIDER/log/lup/swin_small/checkpoint_tea.pth' OUTPUT_DIR './log/msmt17/swin_small' SOLVER.BASE_LR 0.0002 SOLVER.OPTIMIZER_NAME 'SGD' MODEL.SEMANTIC_WEIGHT 0.2
