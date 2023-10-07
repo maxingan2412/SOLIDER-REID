@@ -3,8 +3,8 @@ from datasets import make_dataloader,make_mars_dataloader
 from model import make_model
 from solver import make_optimizer, WarmupMultiStepLR
 from solver.scheduler_factory import create_scheduler
-from loss import make_loss
-from processor import do_train
+from loss import make_loss, make_mars_loss
+from processor import do_train, do_mars_train
 import random
 import torch
 import numpy as np
@@ -80,8 +80,19 @@ if __name__ == '__main__':
     #train_loader, train_loader_normal, val_loader, num_query, num_classes, camera_num, view_num = make_dataloader(cfg)
 
     model = make_model(cfg, num_class=num_classes, camera_num=camera_num, view_num = view_num, semantic_weight = cfg.MODEL.SEMANTIC_WEIGHT)
+
+    # if cfg.DATASETS.NAMES == 'mars':
+    #     loss_func, center_criterion = make_mars_loss(cfg, num_classes=num_classes)
+    # else:
+    #     loss_func, center_criterion = make_loss(cfg, num_classes=num_classes)
+
+
     loss_func, center_criterion = make_loss(cfg, num_classes=num_classes)
+
+
+
     optimizer, optimizer_center = make_optimizer(cfg, model, center_criterion)
+
 
     if cfg.SOLVER.WARMUP_METHOD == 'cosine':
         logger.info('===========using cosine learning rate=======')
@@ -92,15 +103,23 @@ if __name__ == '__main__':
                                       cfg.SOLVER.WARMUP_FACTOR,
                                       cfg.SOLVER.WARMUP_EPOCHS, cfg.SOLVER.WARMUP_METHOD)
 
-    do_train(
-        cfg,
-        model,
-        center_criterion,
-        train_loader,
-        val_loader,
-        optimizer,
-        optimizer_center,
-        scheduler,
-        loss_func,
-        num_query, args.local_rank
-    )
+    if cfg.DATASETS.NAMES == 'mars':
+        do_mars_train(cfg, model, center_criterion, train_loader, q_val_set,g_val_set,optimizer, optimizer_center, scheduler, loss_func, num_query, args.local_rank)
+    else:
+        do_train(cfg, model, center_criterion, train_loader, val_loader, optimizer, optimizer_center, scheduler, loss_func, num_query, args.local_rank)
+
+
+
+
+    # #do_train(
+    #     cfg,
+    #     model,
+    #     center_criterion,
+    #     train_loader,
+    #     val_loader,
+    #     optimizer,
+    #     optimizer_center,
+    #     scheduler,
+    #     loss_func,
+    #     num_query, args.local_rank
+    # )

@@ -69,8 +69,7 @@ def make_loss(cfg, num_classes):    # modified by gu
                     else:
                             TRI_LOSS = triplet(feat, target, normalize_feature=cfg.SOLVER.TRP_L2)[0]
 
-                    return cfg.MODEL.ID_LOSS_WEIGHT * ID_LOSS + \
-                               cfg.MODEL.TRIPLET_LOSS_WEIGHT * TRI_LOSS
+                    return cfg.MODEL.ID_LOSS_WEIGHT * ID_LOSS + cfg.MODEL.TRIPLET_LOSS_WEIGHT * TRI_LOSS
             else:
                 print('expected METRIC_LOSS_TYPE should be triplet'
                       'but got {}'.format(cfg.MODEL.METRIC_LOSS_TYPE))
