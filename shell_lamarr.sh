@@ -1,43 +1,39 @@
 #!/bin/bash
 
+# sh xxx.sh trainlog
+# 检查是否有参数传递给脚本
+if [ "$#" -ne 1 ]; then
+    echo "使用方法: $0 <日志名称>"
+    exit 1
+fi
+
+# 获取日志名称参数
+LOG_NAME=$1
+
 # 设置日志文件夹名称（你可以根据需要修改）
-LOG_FOLDER="my_logs"
+LOG_FOLDER="shell_lamar_log"
 
 # 创建日志文件夹，如果不存在
 mkdir -p "$LOG_FOLDER"
 
-# 设置环境变量
-export RANK=0  # 设置当前进程的排名
-export WORLD_SIZE=1  # 设置总的进程数
-export MASTER_ADDR=localhost  # 设置主节点地址
-export MASTER_PORT=12345  # 设置主节点端口
-
 # 获取当前时间并格式化为文件名
 CURRENT_TIME=$(date "+%Y-%m-%d_%H-%M-%S")
-LOG_FILE="./${LOG_FOLDER}/train_log_${CURRENT_TIME}.txt"
+LOG_FILE="./${LOG_FOLDER}/${LOG_NAME}_${CURRENT_TIME}.txt"
 
-# 执行训练命令并将输出重定向到日志文件，并且不显示在终端上，同时在后台运行
-python train.py --config_file \
-configs/mars/swin_base.yml \
+# 使用nohup在后台执行训练命令，并将所有输出（包括错误输出）重定向到日志文件
+nohup python train.py \
+--config_file configs/mars/swin_base.yml \
 MODEL.PRETRAIN_CHOICE 'self' \
 MODEL.PRETRAIN_PATH 'pretrained_model/checkpoint_tea.pth' \
-OUTPUT_DIR "./log/mars/swin_base" \
+OUTPUT_DIR './log/mars/swin_base' \
 SOLVER.BASE_LR 0.0002 \
 SOLVER.OPTIMIZER_NAME 'SGD' \
+SOLVER.CHECKPOINT_PERIOD 40 \
+SOLVER.EVAL_PERIOD 30 \
 MODEL.SEMANTIC_WEIGHT 0.2 \
-SOLVER.IMS_PER_BATCH 384 \
-SOLVER.MAX_EPOCHS 31 \
-TEST.IMS_PER_BATCH 2000 \
+SOLVER.IMS_PER_BATCH 96 \
 DATALOADER.NUM_WORKERS 24 \
-SOLVER.EVAL_PERIOD 1 \
-SOLVER.CHECKPOINT_PERIOD 29 \
-MODEL.DIST_TRAIN False > "$LOG_FILE" 2>&1 &
+>> "$LOG_FILE" 2>&1 &
 
-# 输出日志文件路径
-echo "训练日志文件已保存到：$LOG_FILE"
-
-if [ $? -eq 0 ]; then
-    echo "训练成功！"
-else
-    echo "训练失败，请查看日志文件以获取详细信息：$LOG_FILE"
-fi
+# 将脚本结果写入日志文件
+echo "训练命令已在后台启动。训练日志文件已保存到：$LOG_FILE"

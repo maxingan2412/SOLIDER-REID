@@ -451,7 +451,8 @@ class VideoDataset_inderase(Dataset):
                     indices.append(random.randint(min(i * each, num - 1), num - 1))
             # print(len(indices), indices, num ) 以上代码的意思是 例如，如果 self.seq_len 为 4，num（图像数量）为 10，那么生成的索引可能是 [2, 4, 6, 9]，表示从第 2 张图像开始，依次选择连续的 4 张图像作为子序列。 代码是在根据指定的序列长度 self.seq_len 随机生成一组索引。这些索引将用于从图像路径列表中选择对应位置的图像，形成一个子序列
 
-        if self.erase:
+        if hasattr(self, 'erase'):
+            # 当self.erase存在时执行的代码,也是VID的代码
             imgs = []
             labels = []
             targt_cam = []
@@ -480,7 +481,9 @@ class VideoDataset_inderase(Dataset):
             return imgs, pid, targt_cam, labels
         else:
             imgs = []
+            labels = []
             targt_cam = []
+
 
             for index in indices:  # 便利index，拿到这些index位置的图片
                 index = int(index)
@@ -496,14 +499,15 @@ class VideoDataset_inderase(Dataset):
                     img = self.transform(img)  # 这里已经把图片用归一化等东西 tensro已经是比较小的数，比如-1 0.5之类，同时这里img已经是 tensor 3 256 128
                 #img, temp = self.erase(img)  # 1就是擦了 0就是没擦 temp是1或者0
                 #labels.append(temp)
+                labels.append(1)
                 img = img.unsqueeze(0)  # 在第0维度加一个维度，变成 1 3 256 128
                 imgs.append(img)
                 targt_cam.append(camid)  # pid和camid在一个tracklet中其实都只有一个，这里处理camid应该是为了嵌入camid的信息，相当于这里直接扩张了cam的维度
             #labels = torch.tensor(labels)
             imgs = torch.cat(imgs,
                              dim=0)  # 通过调用 torch.cat(imgs, dim=0)，你将这些图像张量沿着维度0（即批量维度）进行拼接，得到一个更大的张量。 这里是一个list。里面是各个tensror 1 3 256 128
-
-            return imgs, pid, targt_cam, 1
+            labels = torch.tensor(labels)
+            return imgs, pid, targt_cam, labels
 
 
 

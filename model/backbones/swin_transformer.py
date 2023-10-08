@@ -1385,7 +1385,7 @@ class SwinTransformer(BaseModule):
                                self.num_features[i]).permute(0, 3, 1,
                                                              2).contiguous()
                 outs.append(out)
-        x = self.avgpool(outs[-1])
+        x = self.avgpool(outs[-1]) # x就是 featue的最后一位的avgpool feature是64 1024 12 4
         x = torch.flatten(x, 1)
         return x, outs # x:bs,1024, outs list 4
 

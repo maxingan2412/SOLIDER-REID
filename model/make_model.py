@@ -369,10 +369,16 @@ class build_mars_transformer(nn.Module):
 
         self.dropout = nn.Dropout(self.dropout_rate)
 
+
+        ###加入  a_val
+
+
         #if pretrain_choice == 'self':
         #    self.load_param(model_path)
     # input : x tensor bs,3,h,w | label tensor bs  cam_label tensor bs, view_label tensor bs   . x是一个batch的 img label 是personid ， camlabel是camid viewlabel是viewid，在market1501中，camid是1-6，viewid是1-6，personid都是1
     def forward(self, x, label=None, cam_label= None, view_label=None):
+        model_jpm = False
+
         b=x.size(0) # batch size 32
         t=x.size(1) # seq 4
         x = x.view(b * t, x.size(2), x.size(3), x.size(4)) #[32,4,3,256,128] --> [128,3,256,128]
@@ -382,28 +388,53 @@ class build_mars_transformer(nn.Module):
         global_feat, featmaps = self.base(x) #如果是swin global 对应这 vid里的feat 也就是再来个 classifier就到score了
 
 
-        #变回bs * dim的形式，实验
+        #变回bs * dim的形式，新加入
         global_feat = torch.mean(global_feat.view(-1,t,1024),dim=1)
 
-        if self.reduce_feat_dim:
-            global_feat = self.fcneck(global_feat)
-        feat = self.bottleneck(global_feat)
-        feat_cls = self.dropout(feat)
+        if not model_jpm:
+            if self.reduce_feat_dim:
+                global_feat = self.fcneck(global_feat)
+            feat = self.bottleneck(global_feat)
+            feat_cls = self.dropout(feat)
 
-        if self.training:
-            if self.ID_LOSS_TYPE in ('arcface', 'cosface', 'amsoftmax', 'circle'):
-                cls_score = self.classifier(feat_cls, label)
+            if self.training:
+                if self.ID_LOSS_TYPE in ('arcface', 'cosface', 'amsoftmax', 'circle'):
+                    cls_score = self.classifier(feat_cls, label)
+                else:
+                    cls_score = self.classifier(feat_cls)
+                # output cls_score tensor bs pid_num(625) , global_feat bs 1024, featmaps list 4 features 128 96 32 ,  256 48 16, 512 24 8, 1024 12 4
+                return cls_score, global_feat, featmaps  # global feature for triplet loss,输出位
             else:
-                cls_score = self.classifier(feat_cls)
-            # output cls_score tensor bs pid_num(625) , global_feat bs 1024, featmaps list 4 features 128 96 32 ,  256 48 16, 512 24 8, 1024 12 4
-            return cls_score, global_feat, featmaps  # global feature for triplet loss
-        else:
-            if self.neck_feat == 'after':
-                print("Test with feature after BN")
-                return feat, featmaps
-            else:
-                print("Test with feature before BN")
-                return global_feat, featmaps
+                if self.neck_feat == 'after':
+                    #print("Test with feature after BN")
+                    return feat, featmaps
+                else:
+                    #print("Test with feature before BN")
+                    return global_feat, featmaps #输出位
+        # else:
+
+
+
+
+        # if self.reduce_feat_dim:
+        #     global_feat = self.fcneck(global_feat)
+        # feat = self.bottleneck(global_feat)
+        # feat_cls = self.dropout(feat)
+        #
+        # if self.training:
+        #     if self.ID_LOSS_TYPE in ('arcface', 'cosface', 'amsoftmax', 'circle'):
+        #         cls_score = self.classifier(feat_cls, label)
+        #     else:
+        #         cls_score = self.classifier(feat_cls)
+        #     # output cls_score tensor bs pid_num(625) , global_feat bs 1024, featmaps list 4 features 128 96 32 ,  256 48 16, 512 24 8, 1024 12 4
+        #     return cls_score, global_feat, featmaps  # global feature for triplet loss
+        # else:
+        #     if self.neck_feat == 'after':
+        #         print("Test with feature after BN")
+        #         return feat, featmaps
+        #     else:
+        #         print("Test with feature before BN")
+        #         return global_feat, featmaps
 
     def load_param(self, trained_path):
         param_dict = torch.load(trained_path, map_location = 'cpu')

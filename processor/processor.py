@@ -227,7 +227,7 @@ def evaluate(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=21):
 def extract_features(data_loader, model, use_gpu=True, pool='avg'):
     features_list, pids_list, camids_list = [], [], []
     with (torch.no_grad()):
-        for batch_idx, data in enumerate(tqdm(data_loader)):
+        for batch_idx, data in enumerate(data_loader):
             data = data[0]
             imgs, pids, camids,_ = data
 
@@ -310,7 +310,7 @@ def test_mars(model, queryloader, galleryloader, pool='avg', use_gpu=True):
 def model_inference(model, device, val_loader, evaluator, cfg):
     logger = logging.getLogger("transreid.test")
     model.eval()
-    for n_iter, (img, vid, camid, camids, target_view, *args) in enumerate(tqdm(val_loader)):
+    for n_iter, (img, vid, camid, camids, target_view, *args) in enumerate(val_loader):
         with torch.no_grad():
             img = img.to(device)
             camids = camids.to(device)
@@ -369,7 +369,7 @@ def do_train(cfg,
         evaluator.reset()
         model.train()
         #
-        for n_iter, (img, vid, target_cam, target_view) in enumerate(tqdm(train_loader)):
+        for n_iter, (img, vid, target_cam, target_view) in enumerate(train_loader):
             optimizer.zero_grad()
             optimizer_center.zero_grad()
             img = img.to(device) # bs 3,h,w tensor
@@ -440,7 +440,7 @@ def do_train(cfg,
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
                     model.eval()
-                    for n_iter, (img, vid, camid, camids, target_view, _) in enumerate(tqdm(val_loader)):
+                    for n_iter, (img, vid, camid, camids, target_view, _) in enumerate(val_loader):
                         with torch.no_grad():
                             img = img.to(device)
                             camids = camids.to(device)
@@ -455,7 +455,7 @@ def do_train(cfg,
                     torch.cuda.empty_cache()
             else:
                 model.eval()
-                for n_iter, (img, vid, camid, camids, target_view, _) in enumerate(tqdm(val_loader)):
+                for n_iter, (img, vid, camid, camids, target_view, _) in enumerate(val_loader):
                     with torch.no_grad():
                         img = img.to(device)
                         camids = camids.to(device)
@@ -509,7 +509,7 @@ def do_mars_train(cfg,
         evaluator.reset()
         model.train()
         #
-        for n_iter, (img, pid, target_cam, labels2) in enumerate(tqdm(train_loader)):
+        for n_iter, (img, pid, target_cam, labels2) in enumerate(train_loader):
             optimizer.zero_grad()
             optimizer_center.zero_grad()
             img = img.to(device) # bs 3,h,w tensor
@@ -579,8 +579,13 @@ def do_mars_train(cfg,
                     torch.save(model.state_dict(),
                                os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
             else:
+                # 获取当前时间并格式化为字符串
+                current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+
                 torch.save(model.state_dict(),
-                           os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
+                           os.path.join(cfg.OUTPUT_DIR,
+                                        "{}{}_{}_{}_{}.pth".format(cfg.MODEL.NAME, cfg.DATASETS.NAMES,
+                                                                   cfg.SOLVER.IMS_PER_BATCH, current_time, epoch)))
 
         if epoch % eval_period == 0:
             # if cfg.MODEL.DIST_TRAIN:
@@ -657,7 +662,7 @@ def do_inference(cfg,
     model.eval()
     img_path_list = []
 
-    for n_iter, (img, pid, camid, camids, target_view, imgpath) in enumerate(tqdm(val_loader)):
+    for n_iter, (img, pid, camid, camids, target_view, imgpath) in enumerate(val_loader):
         with torch.no_grad():
             img = img.to(device)
             camids = camids.to(device)
