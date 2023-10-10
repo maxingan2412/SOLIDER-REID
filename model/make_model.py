@@ -10,6 +10,36 @@ import torch.nn.functional as F
 import numpy as np
 from sklearn.cluster import KMeans,MeanShift,estimate_bandwidth
 
+class SelfAttentionPooling(nn.Module):
+    """
+    Implementation of SelfAttentionPooling
+    Original Paper: Self-Attention Encoding and Pooling for Speaker Recognition
+    https://arxiv.org/pdf/2008.01077v1.pdf
+
+    code from https://gist.github.com/pohanchi/c77f6dbfbcbc21c5215acde4f62e4362
+    """
+
+    def __init__(self, input_dim):
+        super(SelfAttentionPooling, self).__init__()
+        self.W = nn.Linear(input_dim, 1)
+
+    def forward(self, x):
+        """
+        input:
+            batch_rep : size (N, T, H), N: batch size, T: sequence length, H: Hidden dimension
+
+        attention_weight:
+            att_w : size (N, T, 1)
+
+        return:
+            utter_rep: size (N, H)
+        """
+
+        # (N, T, H) -> (N, T) -> (N, T, 1)
+        att_w = nn.functional.softmax(self.W(x).squeeze(dim=-1), dim=-1).unsqueeze(dim=-1)
+        x = torch.sum(x * att_w, dim=1)
+        return x
+
 def get_mask(features,clsnum):
     n,c,h,w = features.shape
     masks = []
@@ -369,6 +399,8 @@ class build_mars_transformer(nn.Module):
 
         self.dropout = nn.Dropout(self.dropout_rate)
 
+        self.attention_pooling = SelfAttentionPooling(self.in_planes)
+
 
         ###加入  a_val
 
@@ -389,7 +421,10 @@ class build_mars_transformer(nn.Module):
 
 
         #变回bs * dim的形式，新加入
-        global_feat = torch.mean(global_feat.view(-1,t,1024),dim=1)
+        #global_feat = torch.mean(global_feat.view(-1,t,1024),dim=1)
+
+        #self-attention pooling
+        global_feat = self.attention_pooling(global_feat.view(-1,t,1024))
 
         if not model_jpm:
             if self.reduce_feat_dim:

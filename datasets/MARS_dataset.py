@@ -137,6 +137,10 @@ class Mars(object):
         # self.query = self.transform(self.query)
         # self.gallery = self.transform(self.gallery)
 
+
+
+
+
     def transform(self, input_list):
         result = []
 

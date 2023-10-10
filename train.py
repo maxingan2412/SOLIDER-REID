@@ -1,5 +1,5 @@
 from utils.logger import setup_logger
-from datasets import make_dataloader,make_mars_dataloader
+from datasets import make_dataloader,make_mars_dataloader,make_marspose_dataloader
 from model import make_model
 from solver import make_optimizer, WarmupMultiStepLR
 from solver.scheduler_factory import create_scheduler
@@ -32,7 +32,10 @@ if __name__ == '__main__':
     parser.add_argument("opts", help="Modify config options using the command-line", default=None,
                         nargs=argparse.REMAINDER)
     parser.add_argument("--local_rank", default=0, type=int)
+    #parser.add_argument("--dist", action='store_true', help="distributed training")0
     args = parser.parse_args()
+
+    #
 
     if args.config_file != "":
         cfg.merge_from_file(args.config_file)
@@ -51,7 +54,7 @@ if __name__ == '__main__':
         pass
 
     logger = setup_logger("transreid", output_dir, if_train=True)
-    logger.info("Saving model in the path :{}".format(cfg.OUTPUT_DIR)) #这个可以在终端打印
+    logger.info("Saving model in the path :{}".format(cfg.OUTPUT_DIR)) #这个可以在终端打印 也可以在log文件中打印
     #logger.info("相关参数".format(args))
 
     if args.config_file != "":
@@ -69,6 +72,8 @@ if __name__ == '__main__':
 
     if cfg.DATASETS.NAMES == 'mars':
         train_loader, num_query, num_classes, camera_num, view_num, q_val_set, g_val_set = make_mars_dataloader(cfg)
+    elif cfg.DATASETS.NAMES == 'marspose':
+        train_loader, num_query, num_classes, camera_num, view_num, q_val_set, g_val_set = make_marspose_dataloader(cfg)
     else:
         train_loader, train_loader_normal, val_loader, num_query, num_classes, camera_num, view_num = make_dataloader(cfg)
 

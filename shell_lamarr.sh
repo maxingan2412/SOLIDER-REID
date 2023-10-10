@@ -20,7 +20,7 @@ mkdir -p "$LOG_FOLDER"
 CURRENT_TIME=$(date "+%Y-%m-%d_%H-%M-%S")
 LOG_FILE="./${LOG_FOLDER}/${LOG_NAME}_${CURRENT_TIME}.txt"
 
-# 使用nohup在后台执行训练命令，并将所有输出（包括错误输出）重定向到日志文件
+# 使用nohup在后台执行训练命令，并将所有输出（包括错误输出）重定向到日志文件, 注意swin中的device_id必须在yml设置。
 nohup python train.py \
 --config_file configs/mars/swin_base.yml \
 MODEL.PRETRAIN_CHOICE 'self' \
@@ -28,11 +28,13 @@ MODEL.PRETRAIN_PATH 'pretrained_model/checkpoint_tea.pth' \
 OUTPUT_DIR './log/mars/swin_base' \
 SOLVER.BASE_LR 0.0002 \
 SOLVER.OPTIMIZER_NAME 'SGD' \
-SOLVER.CHECKPOINT_PERIOD 40 \
+SOLVER.CHECKPOINT_PERIOD 150 \
 SOLVER.EVAL_PERIOD 30 \
 MODEL.SEMANTIC_WEIGHT 0.2 \
-SOLVER.IMS_PER_BATCH 96 \
+SOLVER.IMS_PER_BATCH 32 \
 DATALOADER.NUM_WORKERS 24 \
+INPUT.SIZE_TRAIN "[384, 128]" \
+INPUT.SIZE_TEST "[384, 128]" \
 >> "$LOG_FILE" 2>&1 &
 
 # 将脚本结果写入日志文件
