@@ -4,7 +4,7 @@ from model import make_model
 from solver import make_optimizer, WarmupMultiStepLR
 from solver.scheduler_factory import create_scheduler
 from loss import make_loss, make_mars_loss
-from processor import do_train, do_mars_train
+from processor import do_train, do_mars_train,do_marspose_train
 import random
 import torch
 import numpy as np
@@ -110,6 +110,8 @@ if __name__ == '__main__':
 
     if cfg.DATASETS.NAMES == 'mars':
         do_mars_train(cfg, model, center_criterion, train_loader, q_val_set,g_val_set,optimizer, optimizer_center, scheduler, loss_func, num_query, args.local_rank)
+    elif cfg.DATASETS.NAMES == 'marspose':
+        do_marspose_train(cfg, model, center_criterion, train_loader, q_val_set,g_val_set,optimizer, optimizer_center, scheduler, loss_func, num_query, args.local_rank)
     else:
         do_train(cfg, model, center_criterion, train_loader, val_loader, optimizer, optimizer_center, scheduler, loss_func, num_query, args.local_rank)
 

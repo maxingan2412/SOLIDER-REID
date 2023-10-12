@@ -11,7 +11,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as cp
 import numpy as np
 import cv2
-
+from functools import partial
 from torch.nn import Module as BaseModule
 from torch.nn import ModuleList
 from torch.nn import Sequential
@@ -21,6 +21,12 @@ from torch import Tensor
 
 from itertools import repeat
 import collections.abc
+
+from torchvision.ops import roi_align
+
+from .transreid import TransReID
+
+
 def _ntuple(n):
 
     def parse(x):
@@ -1389,6 +1395,504 @@ class SwinTransformer(BaseModule):
         x = torch.flatten(x, 1)
         return x, outs # x:bs,1024, outs list 4
 
+
+
+
+class SwinTransformerPose(BaseModule):
+    """ Swin Transformer
+    A PyTorch implement of : `Swin Transformer:
+    Hierarchical Vision Transformer using Shifted Windows`  -
+        https://arxiv.org/abs/2103.14030
+    Inspiration from
+    https://github.com/microsoft/Swin-Transformer
+    Args:
+        pretrain_img_size (int | tuple[int]): The size of input image when
+            pretrain. Defaults: 224.
+        in_channels (int): The num of input channels.
+            Defaults: 3.
+        embed_dims (int): The feature dimension. Default: 96.
+        patch_size (int | tuple[int]): Patch size. Default: 4.
+        window_size (int): Window size. Default: 7.
+        mlp_ratio (int): Ratio of mlp hidden dim to embedding dim.
+            Default: 4.
+        depths (tuple[int]): Depths of each Swin Transformer stage.
+            Default: (2, 2, 6, 2).
+        num_heads (tuple[int]): Parallel attention heads of each Swin
+            Transformer stage. Default: (3, 6, 12, 24).
+        strides (tuple[int]): The patch merging or patch embedding stride of
+            each Swin Transformer stage. (In swin, we set kernel size equal to
+            stride.) Default: (4, 2, 2, 2).
+        out_indices (tuple[int]): Output from which stages.
+            Default: (0, 1, 2, 3).
+        qkv_bias (bool, optional): If True, add a learnable bias to query, key,
+            value. Default: True
+        qk_scale (float | None, optional): Override default qk scale of
+            head_dim ** -0.5 if set. Default: None.
+        patch_norm (bool): If add a norm layer for patch embed and patch
+            merging. Default: True.
+        drop_rate (float): Dropout rate. Defaults: 0.
+        attn_drop_rate (float): Attention dropout rate. Default: 0.
+        drop_path_rate (float): Stochastic depth rate. Defaults: 0.1.
+        use_abs_pos_embed (bool): If True, add absolute position embedding to
+            the patch embedding. Defaults: False.
+        act_cfg (dict): Config dict for activation layer.
+            Default: dict(type='LN').
+        norm_cfg (dict): Config dict for normalization layer at
+            output of backone. Defaults: dict(type='LN').
+        with_cp (bool, optional): Use checkpoint or not. Using checkpoint
+            will save some memory while slowing down the training speed.
+            Default: False.
+        pretrained (str, optional): model pretrained path. Default: None.
+        convert_weights (bool): The flag indicates whether the
+            pre-trained model is from the original repo. We may need
+            to convert some keys to make it compatible.
+            Default: False.
+        frozen_stages (int): Stages to be frozen (stop grad and set eval mode).
+            -1 means not freezing any parameters.
+        init_cfg (dict, optional): The Config for initialization.
+            Defaults to None.
+    """
+
+    def __init__(self,
+                 pretrain_img_size=224,
+                 in_channels=3,
+                 embed_dims=96,
+                 patch_size=4,
+                 window_size=7,
+                 mlp_ratio=4,
+                 depths=(2, 2, 6, 2),
+                 num_heads=(3, 6, 12, 24),
+                 strides=(4, 2, 2, 2),
+                 out_indices=(0, 1, 2, 3),
+                 qkv_bias=True,
+                 qk_scale=None,
+                 patch_norm=True,
+                 drop_rate=0.,
+                 attn_drop_rate=0.,
+                 drop_path_rate=0.1,
+                 use_abs_pos_embed=False,
+                 act_cfg=dict(type='GELU'),
+                 norm_cfg=dict(type='LN'),
+                 with_cp=False,
+                 pretrained=None,
+                 convert_weights=False,
+                 frozen_stages=-1,
+                 init_cfg=None,
+                 semantic_weight=0.0,
+                 num_keypoints = 17):
+        self.convert_weights = convert_weights
+        self.frozen_stages = frozen_stages
+        self.num_keypoints = num_keypoints
+        if isinstance(pretrain_img_size, int):
+            pretrain_img_size = to_2tuple(pretrain_img_size)
+        elif isinstance(pretrain_img_size, tuple):
+            if len(pretrain_img_size) == 1:
+                pretrain_img_size = to_2tuple(pretrain_img_size[0])
+            assert len(pretrain_img_size) == 2, \
+                f'The size of image should have length 1 or 2, ' \
+                f'but got {len(pretrain_img_size)}'
+
+        assert not (init_cfg and pretrained), \
+            'init_cfg and pretrained cannot be specified at the same time'
+        if isinstance(pretrained, str):
+            warnings.warn('DeprecationWarning: pretrained is deprecated, '
+                          'please use "init_cfg" instead')
+            self.init_cfg = dict(type='Pretrained', checkpoint=pretrained)
+        elif pretrained is None:
+            self.init_cfg = init_cfg
+        else:
+            raise TypeError('pretrained must be a str or None')
+
+        super(SwinTransformerPose, self).__init__()
+
+        num_layers = len(depths)
+        self.out_indices = out_indices
+        self.use_abs_pos_embed = use_abs_pos_embed
+
+        assert strides[0] == patch_size, 'Use non-overlapping patch embed.'
+
+        self.patch_embed = PatchEmbed(
+            in_channels=in_channels,
+            embed_dims=embed_dims,
+            conv_type='Conv2d',
+            kernel_size=patch_size,
+            stride=strides[0],
+            norm_cfg=norm_cfg if patch_norm else None,
+            init_cfg=None)
+
+        if self.use_abs_pos_embed:
+            patch_row = pretrain_img_size[0] // patch_size
+            patch_col = pretrain_img_size[1] // patch_size
+            num_patches = patch_row * patch_col
+            self.absolute_pos_embed = nn.Parameter(
+                torch.zeros((1, num_patches, embed_dims)))
+
+        self.drop_after_pos = nn.Dropout(p=drop_rate)
+
+        # set stochastic depth decay rule
+        total_depth = sum(depths)
+        dpr = [
+            x.item() for x in torch.linspace(0, drop_path_rate, total_depth)
+        ]
+
+        self.stages = ModuleList()
+        in_channels = embed_dims
+        for i in range(num_layers):
+            if i < num_layers - 1:
+                downsample = PatchMerging(
+                    in_channels=in_channels,
+                    out_channels=2 * in_channels,
+                    stride=strides[i + 1],
+                    norm_cfg=norm_cfg if patch_norm else None,
+                    init_cfg=None)
+            else:
+                downsample = None
+
+            stage = SwinBlockSequence(
+                embed_dims=in_channels,
+                num_heads=num_heads[i],
+                feedforward_channels=mlp_ratio * in_channels,
+                depth=depths[i],
+                window_size=window_size,
+                qkv_bias=qkv_bias,
+                qk_scale=qk_scale,
+                drop_rate=drop_rate,
+                attn_drop_rate=attn_drop_rate,
+                drop_path_rate=dpr[sum(depths[:i]):sum(depths[:i + 1])],
+                downsample=downsample,
+                act_cfg=act_cfg,
+                norm_cfg=norm_cfg,
+                with_cp=with_cp,
+                init_cfg=None)
+            self.stages.append(stage)
+            if downsample:
+                in_channels = downsample.out_channels
+
+        self.num_features = [int(embed_dims * 2**i) for i in range(num_layers)]
+        # Add a norm layer for each output
+        for i in out_indices:
+            layer = build_norm_layer(norm_cfg, self.num_features[i])[1]
+            layer_name = f'norm{i}'
+            self.add_module(layer_name, layer)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1,1))
+
+        # semantic embedding
+        self.semantic_weight = semantic_weight
+        if self.semantic_weight >= 0:
+            self.semantic_embed_w = ModuleList()
+            self.semantic_embed_b = ModuleList()
+            for i in range(len(depths)):
+                if i >= len(depths) - 1:
+                    i = len(depths) - 2
+                semantic_embed_w = nn.Linear(2, self.num_features[i+1])
+                semantic_embed_b = nn.Linear(2, self.num_features[i+1])
+                for param in semantic_embed_w.parameters():
+                    param.requires_grad = False
+                for param in semantic_embed_b.parameters():
+                    param.requires_grad = False
+                trunc_normal_init(semantic_embed_w, std=.02, bias=0.)
+                trunc_normal_init(semantic_embed_b, std=.02, bias=0.)
+                self.semantic_embed_w.append(semantic_embed_w)
+                self.semantic_embed_b.append(semantic_embed_b)
+            self.softplus = nn.Softplus()
+
+        self.transreid = TransReID(
+        img_size=[256, 128], patch_size=16, stride_size=[16, 16], embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,\
+        camera=0,  drop_path_rate=0.1, drop_rate=0.0, attn_drop_rate=0.0,norm_layer=partial(nn.LayerNorm, eps=1e-6),  cam_lambda=3.0)
+
+
+        state_dict_imagenet = torch.load('jx_vit_base_p16_224-80ecf9dd.pth', map_location='cpu')
+        self.transreid.load_param(state_dict_imagenet, load=True)  # 给模型加载这些参数
+
+
+
+    def train(self, mode=True):
+        """Convert the model into training mode while keep layers freezed."""
+        super(SwinTransformerPose, self).train(mode)
+        self._freeze_stages()
+
+    def _freeze_stages(self):
+        if self.frozen_stages >= 0:
+            self.patch_embed.eval()
+            for param in self.patch_embed.parameters():
+                param.requires_grad = False
+            if self.use_abs_pos_embed:
+                self.absolute_pos_embed.requires_grad = False
+            self.drop_after_pos.eval()
+
+        for i in range(1, self.frozen_stages + 1):
+
+            if (i - 1) in self.out_indices:
+                norm_layer = getattr(self, f'norm{i-1}')
+                norm_layer.eval()
+                for param in norm_layer.parameters():
+                    param.requires_grad = False
+
+            m = self.stages[i - 1]
+            m.eval()
+            for param in m.parameters():
+                param.requires_grad = False
+
+    def init_weights(self, pretrained=None):
+        logger = logging.getLogger("loading parameters.")
+        if pretrained is None:
+            logger.warn(f'No pre-trained weights for '
+                        f'{self.__class__.__name__}, '
+                        f'training start from scratch')
+            if self.use_abs_pos_embed:
+                trunc_normal_(self.absolute_pos_embed, std=0.02)
+            for m in self.modules():
+                if isinstance(m, nn.Linear):
+                    trunc_normal_init(m, std=.02, bias=0.)
+                elif isinstance(m, nn.LayerNorm):
+                    constant_init(m.bias, 0)
+                    constant_init(m.weight, 1.0)
+        else:
+            ckpt = torch.load(pretrained,map_location='cpu')
+            if 'teacher' in ckpt:
+                ckpt = ckpt['teacher']
+
+            if 'state_dict' in ckpt:
+                _state_dict = ckpt['state_dict']
+            elif 'model' in ckpt:
+                _state_dict = ckpt['model']
+            else:
+                _state_dict = ckpt
+            if self.convert_weights:
+                # supported loading weight from original repo,
+                _state_dict = swin_converter(_state_dict)
+
+            state_dict = OrderedDict()
+            for k, v in _state_dict.items():
+                if k.startswith('backbone.'):
+                    state_dict[k[9:]] = v
+
+            # strip prefix of state_dict
+            if list(state_dict.keys())[0].startswith('module.'):
+                state_dict = {k[7:]: v for k, v in state_dict.items()}
+
+            # reshape absolute position embedding
+            if state_dict.get('absolute_pos_embed') is not None:
+                absolute_pos_embed = state_dict['absolute_pos_embed']
+                N1, L, C1 = absolute_pos_embed.size()
+                N2, C2, H, W = self.absolute_pos_embed.size()
+                if N1 != N2 or C1 != C2 or L != H * W:
+                    logger.warning('Error in loading absolute_pos_embed, pass')
+                else:
+                    state_dict['absolute_pos_embed'] = absolute_pos_embed.view(
+                        N2, H, W, C2).permute(0, 3, 1, 2).contiguous()
+
+            # interpolate position bias table if needed
+            relative_position_bias_table_keys = [
+                k for k in state_dict.keys()
+                if 'relative_position_bias_table' in k
+            ]
+            for table_key in relative_position_bias_table_keys:
+                table_pretrained = state_dict[table_key]
+                table_current = self.state_dict()[table_key]
+                L1, nH1 = table_pretrained.size()
+                L2, nH2 = table_current.size()
+                if nH1 != nH2:
+                    logger.warning(f'Error in loading {table_key}, pass')
+                elif L1 != L2:
+                    S1 = int(L1**0.5)
+                    S2 = int(L2**0.5)
+                    table_pretrained_resized = F.interpolate(
+                        table_pretrained.permute(1, 0).reshape(1, nH1, S1, S1),
+                        size=(S2, S2),
+                        mode='bicubic')
+                    state_dict[table_key] = table_pretrained_resized.view(
+                        nH2, L2).permute(1, 0).contiguous()
+
+            res = self.load_state_dict(state_dict, False)
+            print('unloaded parameters:', res)
+
+    def coords_to_pseudo_box(self, orig_coords, w, h):
+        N = orig_coords.shape[0]
+        boxes = torch.zeros(N, self.num_keypoints, 4).to(orig_coords)
+        boxes[:, :, 0] = orig_coords[:, :, 0] * w
+        boxes[:, :, 1] = orig_coords[:, :, 1] * h
+        boxes[:, :, 2] = boxes[:, :, 0] + 1
+        boxes[:, :, 3] = boxes[:, :, 1] + 1
+        # if keypoints are annotated as 0 or -1, then replace the keypoint feature with global feature.
+        invalid_indices = (boxes[:, :, 0] <= 0) * \
+                          (boxes[:, :, 1] <= 0)  # x = 0 or y = 0   #把里面小于0 。前两位变成0 后面变成宽高。
+        boxes[invalid_indices] = torch.tensor([0., 0., w, h]).to(orig_coords)
+        # lists, [size = (numkeypoints, 4)]
+        return [b.squeeze(0) for b in
+                boxes.split(1, 0)]  # 先把boxes中的128这个维度单拿出来，变成128个 tensor（1 17 4）  再把 这些tensor 的第一维度压缩 变为  tensor(17 4）
+
+    def forward(self, x, keypoints=1,b=1,t=1,semantic_weight=None):
+        if self.semantic_weight >= 0 and semantic_weight == None:
+            w = torch.ones(x.shape[0],1) * self.semantic_weight
+            w = torch.cat([w, 1-w], axis=-1)
+            semantic_weight = w.cuda()
+        _,_,height,width = x.shape
+        x, hw_shape = self.patch_embed(x)
+        spatialscale = [0.0625, 0.0625 / 4, 0.0625 / 16, 0.0625 / 64]
+        if self.use_abs_pos_embed:
+            x = x + self.absolute_pos_embed
+        x = self.drop_after_pos(x)
+
+        # outs = []
+        # for i, stage in enumerate(self.stages):
+        #     x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+        #     if self.semantic_weight >= 0:
+        #         sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+        #         sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+        #         x = x * self.softplus(sw) + sb
+        #     if i in self.out_indices:
+        #         norm_layer = getattr(self, f'norm{i}')
+        #         out = norm_layer(out)
+        #         out = out.view(-1, *out_hw_shape,
+        #                        self.num_features[i]).permute(0, 3, 1,
+        #                                                      2).contiguous()
+        #         outs.append(out)
+        #         orig_coords = keypoints.view(-1,self.num_keypoints,5)[:,:,:2]
+        #         pseudo_boxes = self.coords_to_pseudo_box(orig_coords, width, height)
+        #         featureforvit = roi_align(out,pseudo_boxes,output_size=1,spatial_scale = spatialscale[i])
+        if not self.training:
+            outs = []
+            for i, stage in enumerate(self.stages):
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+                if self.semantic_weight >= 0:
+                    sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                    sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                    x = x * self.softplus(sw) + sb
+                if i in self.out_indices:
+                    norm_layer = getattr(self, f'norm{i}')
+                    out = norm_layer(out)
+                    out = out.view(-1, *out_hw_shape,
+                                   self.num_features[i]).permute(0, 3, 1,
+                                                                 2).contiguous()
+                    outs.append(out)
+            x = self.avgpool(outs[-1])  # x就是 featue的最后一位的avgpool feature是64 1024 12 4
+            x = torch.flatten(x, 1)
+            return x, outs
+        else:
+            outs = []
+            orig_coords = keypoints.view(-1, self.num_keypoints, 5)[:, :, :2]
+            pseudo_boxes = self.coords_to_pseudo_box(orig_coords, width, height)
+
+            i = 0
+            stage = self.stages[i]
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+
+            sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+            sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+            x = x * self.softplus(sw) + sb
+
+            norm_layer = getattr(self, f'norm{i}')
+            out = norm_layer(out)
+            out = out.view(-1, *out_hw_shape,
+                           self.num_features[i]).permute(0, 3, 1,
+                                                         2).contiguous()
+            outs.append(out)
+            featureforvit1 = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
+            #aaa = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
+            featureforvit1 = featureforvit1.view(b,-1,768)
+            featureforvit1 = self.transreid.blocks[0](featureforvit1)
+            featureforvit1 = self.transreid.blocks[1](featureforvit1)
+            featureforvit1 = self.transreid.blocks[2](featureforvit1)
+
+
+            i = 1
+            stage = self.stages[i]
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+
+            sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+            sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+            x = x * self.softplus(sw) + sb
+
+            norm_layer = getattr(self, f'norm{i}')
+            out = norm_layer(out)
+            out = out.view(-1, *out_hw_shape,
+                           self.num_features[i]).permute(0, 3, 1,
+                                                         2).contiguous()
+            outs.append(out)
+            featureforvit2 = roi_align(out, pseudo_boxes, output_size=(3, 1), spatial_scale=spatialscale[i])
+            featureforvit2 = featureforvit2.view(b, -1, 768)
+            featureforvit2 = featureforvit2 + featureforvit1
+
+            # aaa = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
+            featureforvit2 = self.transreid.blocks[3](featureforvit2)
+            featureforvit2 = self.transreid.blocks[4](featureforvit2)
+            featureforvit2 = self.transreid.blocks[5](featureforvit2)
+
+
+
+
+            i = 2
+            stage = self.stages[i]
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+
+            sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+            sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+            x = x * self.softplus(sw) + sb
+
+            norm_layer = getattr(self, f'norm{i}')
+            out = norm_layer(out)
+            out = out.view(-1, *out_hw_shape,
+                           self.num_features[i]).permute(0, 3, 1,
+                                                         2).contiguous()
+            outs.append(out)
+
+            featureforvit3 = roi_align(out, pseudo_boxes, output_size=(3, 1), spatial_scale=spatialscale[i])
+            featureforvit3 = featureforvit3.view(b, 17*t, -1)
+            featureforvit3 = featureforvit3.view(b,17*t,2,-1)
+            featureforvit3 = featureforvit3.mean(dim=2)
+
+
+            featureforvit3 = featureforvit3 + featureforvit2
+
+            # aaa = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
+            featureforvit3 = self.transreid.blocks[6](featureforvit3)
+            featureforvit3 = self.transreid.blocks[7](featureforvit3)
+            featureforvit3 = self.transreid.blocks[8](featureforvit3)
+
+
+
+
+            i = 3
+            stage = self.stages[i]
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+
+            sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+            sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+            x = x * self.softplus(sw) + sb
+
+            norm_layer = getattr(self, f'norm{i}')
+            out = norm_layer(out)
+            out = out.view(-1, *out_hw_shape,
+                           self.num_features[i]).permute(0, 3, 1,
+                                                         2).contiguous()
+            outs.append(out)
+            featureforvit4 = roi_align(out, pseudo_boxes, output_size=(3, 1), spatial_scale=spatialscale[i])
+            featureforvit4 = featureforvit4.view(b, 68, -1)
+            featureforvit4 = featureforvit4.view(b,68,-1,768)
+            featureforvit4 = featureforvit4.mean(dim=2)
+            featureforvit4 = featureforvit4 + featureforvit3
+            featureforvit4 = self.transreid.blocks[9](featureforvit4)
+            featureforvit4 = self.transreid.blocks[10](featureforvit4)
+            featureforvit4 = self.transreid.blocks[11](featureforvit4)
+
+
+
+
+            keypointsfeature = featureforvit4.mean(dim=1)
+
+            keypointsfeature = self.transreid.bottleneck(keypointsfeature)
+            #keypointsscore = self.transreid.fc(keypointsfeature)
+
+
+
+
+
+            x = self.avgpool(outs[-1]) # x就是 featue的最后一位的avgpool feature是64 1024 12 4
+            x = torch.flatten(x, 1)
+            return x, outs,keypointsfeature # x:bs,1024, outs list 4
+
 def swin_base_patch4_window7_224(img_size=224,drop_rate=0.0, attn_drop_rate=0.0, drop_path_rate=0., **kwargs):
     model = SwinTransformer(pretrain_img_size = img_size, patch_size=4, window_size=7, embed_dims=128, depths=(2, 2, 18, 2), num_heads=(4, 8, 16, 32), drop_path_rate=drop_path_rate, drop_rate=drop_rate, attn_drop_rate=attn_drop_rate, **kwargs)
     return model
@@ -1399,4 +1903,8 @@ def swin_small_patch4_window7_224(img_size=224,drop_rate=0.0, attn_drop_rate=0.0
 
 def swin_tiny_patch4_window7_224(img_size=224,drop_rate=0.0, attn_drop_rate=0.0, drop_path_rate=0., **kwargs):
     model = SwinTransformer(pretrain_img_size = img_size, patch_size=4, window_size=7, embed_dims=96, depths=(2, 2, 6, 2), num_heads=(3, 6, 12, 24), drop_path_rate=drop_path_rate, drop_rate=drop_rate, attn_drop_rate=attn_drop_rate, **kwargs)
+    return model
+
+def pose_swin_base_patch4_window7_224(img_size=224,drop_rate=0.0, attn_drop_rate=0.0, drop_path_rate=0., **kwargs):
+    model = SwinTransformerPose(pretrain_img_size = img_size, patch_size=4, window_size=7, embed_dims=128, depths=(2, 2, 18, 2), num_heads=(4, 8, 16, 32), drop_path_rate=drop_path_rate, drop_rate=drop_rate, attn_drop_rate=attn_drop_rate, **kwargs)
     return model
