@@ -25,6 +25,7 @@ import collections.abc
 from torchvision.ops import roi_align
 
 from .transreid import TransReID
+# from ..make_model import weights_init_kaiming
 
 
 def _ntuple(n):
@@ -1605,6 +1606,18 @@ class SwinTransformerPose(BaseModule):
         state_dict_imagenet = torch.load('jx_vit_base_p16_224-80ecf9dd.pth', map_location='cpu')
         self.transreid.load_param(state_dict_imagenet, load=True)  # 给模型加载这些参数
 
+        from ..make_model import weights_init_kaiming
+        self.dimdown1 = nn.Linear(24*8*128,768)
+        self.dimdown1.apply(weights_init_kaiming)
+        self.dimdown2 = nn.Linear(12*4*256, 768)
+        self.dimdown2.apply(weights_init_kaiming)
+        self.dimdown3 = nn.Linear(6*2*512, 768)
+        self.dimdown3.apply(weights_init_kaiming)
+        self.dimdown4 = nn.Linear(3*1*1024, 768)
+        self.dimdown4.apply(weights_init_kaiming)
+
+
+
 
 
     def train(self, mode=True):
@@ -1775,115 +1788,215 @@ class SwinTransformerPose(BaseModule):
             orig_coords = keypoints.view(-1, self.num_keypoints, 5)[:, :, :2]
             pseudo_boxes = self.coords_to_pseudo_box(orig_coords, width, height)
 
-            i = 0
-            stage = self.stages[i]
-            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            fuza = True
 
-            sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
-            sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
-            x = x * self.softplus(sw) + sb
+            if fuza:
+                i = 0
+                stage = self.stages[i]
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
 
-            norm_layer = getattr(self, f'norm{i}')
-            out = norm_layer(out)
-            out = out.view(-1, *out_hw_shape,
-                           self.num_features[i]).permute(0, 3, 1,
-                                                         2).contiguous()
-            outs.append(out)
-            featureforvit1 = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
-            #aaa = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
-            featureforvit1 = featureforvit1.view(b,-1,768)
-            featureforvit1 = self.transreid.blocks[0](featureforvit1)
-            featureforvit1 = self.transreid.blocks[1](featureforvit1)
-            featureforvit1 = self.transreid.blocks[2](featureforvit1)
+                sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.softplus(sw) + sb
+
+                norm_layer = getattr(self, f'norm{i}')
+                out = norm_layer(out)
+                out = out.view(-1, *out_hw_shape,
+                               self.num_features[i]).permute(0, 3, 1,
+                                                             2).contiguous()
+                outs.append(out)
+                featureforvit1 = roi_align(out, pseudo_boxes, output_size=(24, 8), spatial_scale=spatialscale[i])
+                # aaa = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
+                featureforvit1 = featureforvit1.view(b,self.num_keypoints *t,-1)
+                featureforvit1 = self.dimdown1(featureforvit1)
+                featureforvit1 = self.transreid.blocks[0](featureforvit1)
+                featureforvit1 = self.transreid.blocks[1](featureforvit1)
+                featureforvit1 = self.transreid.blocks[2](featureforvit1)
+
+                i = 1
+                stage = self.stages[i]
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+
+                sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.softplus(sw) + sb
+
+                norm_layer = getattr(self, f'norm{i}')
+                out = norm_layer(out)
+                out = out.view(-1, *out_hw_shape,
+                               self.num_features[i]).permute(0, 3, 1,
+                                                             2).contiguous()
+                outs.append(out)
+                featureforvit2 = roi_align(out, pseudo_boxes, output_size=(12, 4), spatial_scale=spatialscale[i])
+                featureforvit2 = featureforvit2.view(b,self.num_keypoints *t,-1)
+                featureforvit2 = self.dimdown2(featureforvit2)
+                featureforvit2 = featureforvit2 + featureforvit1
+
+                # aaa = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
+                featureforvit2 = self.transreid.blocks[3](featureforvit2)
+                featureforvit2 = self.transreid.blocks[4](featureforvit2)
+                featureforvit2 = self.transreid.blocks[5](featureforvit2)
+
+                i = 2
+                stage = self.stages[i]
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+
+                sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.softplus(sw) + sb
+
+                norm_layer = getattr(self, f'norm{i}')
+                out = norm_layer(out)
+                out = out.view(-1, *out_hw_shape,
+                               self.num_features[i]).permute(0, 3, 1,
+                                                             2).contiguous()
+                outs.append(out)
+
+                featureforvit3 = roi_align(out, pseudo_boxes, output_size=(6, 2), spatial_scale=spatialscale[i])
+                featureforvit3 = featureforvit3.view(b,self.num_keypoints *t,-1)
+                featureforvit3 = self.dimdown3(featureforvit3)
+                featureforvit3 = featureforvit3 + featureforvit2
+
+                # aaa = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
+                featureforvit3 = self.transreid.blocks[6](featureforvit3)
+                featureforvit3 = self.transreid.blocks[7](featureforvit3)
+                featureforvit3 = self.transreid.blocks[8](featureforvit3)
+
+                i = 3
+                stage = self.stages[i]
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+
+                sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.softplus(sw) + sb
+
+                norm_layer = getattr(self, f'norm{i}')
+                out = norm_layer(out)
+                out = out.view(-1, *out_hw_shape,
+                               self.num_features[i]).permute(0, 3, 1,
+                                                             2).contiguous()
+                outs.append(out)
+                featureforvit4 = roi_align(out, pseudo_boxes, output_size=(3, 1), spatial_scale=spatialscale[i])
+                featureforvit4 = featureforvit4.view(b,self.num_keypoints *t,-1)
+                featureforvit4 = self.dimdown4(featureforvit4)
+                featureforvit4 = featureforvit4 + featureforvit3
+                featureforvit4 = self.transreid.blocks[9](featureforvit4)
+                featureforvit4 = self.transreid.blocks[10](featureforvit4)
+                featureforvit4 = self.transreid.blocks[11](featureforvit4)
+
+                keypointsfeature = featureforvit4.mean(dim=1)
+
+                keypointsfeature = self.transreid.bottleneck(keypointsfeature)
+            else:
+
+                i = 0
+                stage = self.stages[i]
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+
+                sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.softplus(sw) + sb
+
+                norm_layer = getattr(self, f'norm{i}')
+                out = norm_layer(out)
+                out = out.view(-1, *out_hw_shape,
+                               self.num_features[i]).permute(0, 3, 1,
+                                                             2).contiguous()
+                outs.append(out)
+                featureforvit1 = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
+                #aaa = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
+                featureforvit1 = featureforvit1.view(b,-1,768)
+                featureforvit1 = self.transreid.blocks[0](featureforvit1)
+                featureforvit1 = self.transreid.blocks[1](featureforvit1)
+                featureforvit1 = self.transreid.blocks[2](featureforvit1)
 
 
-            i = 1
-            stage = self.stages[i]
-            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+                i = 1
+                stage = self.stages[i]
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
 
-            sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
-            sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
-            x = x * self.softplus(sw) + sb
+                sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.softplus(sw) + sb
 
-            norm_layer = getattr(self, f'norm{i}')
-            out = norm_layer(out)
-            out = out.view(-1, *out_hw_shape,
-                           self.num_features[i]).permute(0, 3, 1,
-                                                         2).contiguous()
-            outs.append(out)
-            featureforvit2 = roi_align(out, pseudo_boxes, output_size=(3, 1), spatial_scale=spatialscale[i])
-            featureforvit2 = featureforvit2.view(b, -1, 768)
-            featureforvit2 = featureforvit2 + featureforvit1
+                norm_layer = getattr(self, f'norm{i}')
+                out = norm_layer(out)
+                out = out.view(-1, *out_hw_shape,
+                               self.num_features[i]).permute(0, 3, 1,
+                                                             2).contiguous()
+                outs.append(out)
+                featureforvit2 = roi_align(out, pseudo_boxes, output_size=(3, 1), spatial_scale=spatialscale[i])
+                featureforvit2 = featureforvit2.view(b, -1, 768)
+                featureforvit2 = featureforvit2 + featureforvit1
 
-            # aaa = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
-            featureforvit2 = self.transreid.blocks[3](featureforvit2)
-            featureforvit2 = self.transreid.blocks[4](featureforvit2)
-            featureforvit2 = self.transreid.blocks[5](featureforvit2)
-
-
-
-
-            i = 2
-            stage = self.stages[i]
-            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
-
-            sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
-            sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
-            x = x * self.softplus(sw) + sb
-
-            norm_layer = getattr(self, f'norm{i}')
-            out = norm_layer(out)
-            out = out.view(-1, *out_hw_shape,
-                           self.num_features[i]).permute(0, 3, 1,
-                                                         2).contiguous()
-            outs.append(out)
-
-            featureforvit3 = roi_align(out, pseudo_boxes, output_size=(3, 1), spatial_scale=spatialscale[i])
-            featureforvit3 = featureforvit3.view(b, 17*t, -1)
-            featureforvit3 = featureforvit3.view(b,17*t,2,-1)
-            featureforvit3 = featureforvit3.mean(dim=2)
-
-
-            featureforvit3 = featureforvit3 + featureforvit2
-
-            # aaa = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
-            featureforvit3 = self.transreid.blocks[6](featureforvit3)
-            featureforvit3 = self.transreid.blocks[7](featureforvit3)
-            featureforvit3 = self.transreid.blocks[8](featureforvit3)
+                # aaa = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
+                featureforvit2 = self.transreid.blocks[3](featureforvit2)
+                featureforvit2 = self.transreid.blocks[4](featureforvit2)
+                featureforvit2 = self.transreid.blocks[5](featureforvit2)
 
 
 
 
-            i = 3
-            stage = self.stages[i]
-            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+                i = 2
+                stage = self.stages[i]
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
 
-            sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
-            sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
-            x = x * self.softplus(sw) + sb
+                sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.softplus(sw) + sb
 
-            norm_layer = getattr(self, f'norm{i}')
-            out = norm_layer(out)
-            out = out.view(-1, *out_hw_shape,
-                           self.num_features[i]).permute(0, 3, 1,
-                                                         2).contiguous()
-            outs.append(out)
-            featureforvit4 = roi_align(out, pseudo_boxes, output_size=(3, 1), spatial_scale=spatialscale[i])
-            featureforvit4 = featureforvit4.view(b, 68, -1)
-            featureforvit4 = featureforvit4.view(b,68,-1,768)
-            featureforvit4 = featureforvit4.mean(dim=2)
-            featureforvit4 = featureforvit4 + featureforvit3
-            featureforvit4 = self.transreid.blocks[9](featureforvit4)
-            featureforvit4 = self.transreid.blocks[10](featureforvit4)
-            featureforvit4 = self.transreid.blocks[11](featureforvit4)
+                norm_layer = getattr(self, f'norm{i}')
+                out = norm_layer(out)
+                out = out.view(-1, *out_hw_shape,
+                               self.num_features[i]).permute(0, 3, 1,
+                                                             2).contiguous()
+                outs.append(out)
+
+                featureforvit3 = roi_align(out, pseudo_boxes, output_size=(3, 1), spatial_scale=spatialscale[i])
+                featureforvit3 = featureforvit3.view(b, 17*t, -1)
+                featureforvit3 = featureforvit3.view(b,17*t,2,-1)
+                featureforvit3 = featureforvit3.mean(dim=2)
 
 
+                featureforvit3 = featureforvit3 + featureforvit2
+
+                # aaa = roi_align(out, pseudo_boxes, output_size=(3,2), spatial_scale=spatialscale[i])
+                featureforvit3 = self.transreid.blocks[6](featureforvit3)
+                featureforvit3 = self.transreid.blocks[7](featureforvit3)
+                featureforvit3 = self.transreid.blocks[8](featureforvit3)
 
 
-            keypointsfeature = featureforvit4.mean(dim=1)
 
-            keypointsfeature = self.transreid.bottleneck(keypointsfeature)
-            #keypointsscore = self.transreid.fc(keypointsfeature)
+
+                i = 3
+                stage = self.stages[i]
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+
+                sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.softplus(sw) + sb
+
+                norm_layer = getattr(self, f'norm{i}')
+                out = norm_layer(out)
+                out = out.view(-1, *out_hw_shape,
+                               self.num_features[i]).permute(0, 3, 1,
+                                                             2).contiguous()
+                outs.append(out)
+                featureforvit4 = roi_align(out, pseudo_boxes, output_size=(3, 1), spatial_scale=spatialscale[i])
+                featureforvit4 = featureforvit4.view(b, 68, -1)
+                featureforvit4 = featureforvit4.view(b,68,-1,768)
+                featureforvit4 = featureforvit4.mean(dim=2)
+                featureforvit4 = featureforvit4 + featureforvit3
+                featureforvit4 = self.transreid.blocks[9](featureforvit4)
+                featureforvit4 = self.transreid.blocks[10](featureforvit4)
+                featureforvit4 = self.transreid.blocks[11](featureforvit4)
+
+
+
+
+                keypointsfeature = featureforvit4.mean(dim=1)
+
+                keypointsfeature = self.transreid.bottleneck(keypointsfeature)
 
 
 

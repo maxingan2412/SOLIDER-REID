@@ -227,7 +227,7 @@ def evaluate(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=21):
 def extract_features(data_loader, model, use_gpu=True, pool='avg'):
     features_list, pids_list, camids_list = [], [], []
     with (torch.no_grad()):
-        for batch_idx, data in enumerate(tqdm(data_loader)):
+        for batch_idx, data in enumerate(data_loader):
             data = data[0]
             imgs, pids, camids,_ = data
 
