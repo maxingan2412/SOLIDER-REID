@@ -370,7 +370,7 @@ def extract_features(data_loader, model, use_gpu=True, pool='avg'):
     max_batches = 999999
 
     with (torch.no_grad()):
-        for batch_idx, data in enumerate(tqdm(data_loader)):
+        for batch_idx, data in enumerate(data_loader):
             # data = data[0]
             # imgs, pids, camids,_ = data
             # if batch_idx > 100:
@@ -447,46 +447,6 @@ def search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, k1
     # 打印最佳值
     print(f"Best results with mAP = {best_map:.4f} and R1 = {best_r1:.4f} for k1={best_k1}, k2={best_k2} and lambda={lambdaValue}")
 
-# from multiprocessing import Pool
-#
-# # 将计算任务打包以便于多进程处理
-# def evaluate_wrapper(args):
-#     k1, k2, qf, gf, q_pids, g_pids, q_camids, g_camids = args
-#     CMC, MAP = evaluate(re_rankingv2(qf, gf, k1, k2, 0.4), q_pids, g_pids, q_camids, g_camids)
-#     return k1, k2, CMC, MAP
-#
-# def search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, k1_range=(10, 31), k2_range=(2, 11), num_processes=None):
-#     best_map = 0
-#     best_r1 = 0
-#     best_k1 = 0
-#     best_k2 = 0
-#
-#     # 创建参数列表
-#     args_list = [(k1, k2, qf, gf, q_pids, g_pids, q_camids, g_camids) for k1 in range(*k1_range) for k2 in range(*k2_range)]
-#
-#     # 使用指定的进程数进行并行计算
-#     with Pool(processes=num_processes) as pool:
-#         results = pool.map(evaluate_wrapper, args_list)
-#
-#     # 遍历结果
-#     for k1, k2, CMC, MAP in results:
-#         print(f"For k1={k1}, k2={k2}: mAP = {MAP:.4f}, R1 = {CMC[0]:.4f}")
-#
-#         # 更新最佳结果
-#         if MAP > best_map and CMC[0] > best_r1:
-#             best_map = MAP
-#             best_r1 = CMC[0]
-#             best_k1 = k1
-#             best_k2 = k2
-#
-#     # 打印最佳结果
-#     print(f"Best results with mAP = {best_map:.4f} and R1 = {best_r1:.4f} for k1={best_k1} and k2={best_k2}")
-
-# 示例调用，使用8个进程
-# search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, num_processes=8)
-
-
-#search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, (10, 31), (2, 11))
 
 
 def test_mars(model, queryloader, galleryloader, pool='avg', use_gpu=True,epoch = 120):
