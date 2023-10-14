@@ -445,3 +445,317 @@ class TransReID(nn.Module):
                 print('shape do not match in k :{}: param_dict{} vs self.state_dict(){}'.format(k, v.shape,
                                                                                                 self.state_dict()[
                                                                                                     k].shape))
+
+
+def resize_pos_embed_zk(posemb, posemb_new, hight, width, hw_ratio):
+    # Rescale the grid of position embeddings when loading from state_dict. Adapted from
+    # https://github.com/google-research/vision_transformer/blob/00883dd691c63a6830751563748663526e811cee/vit_jax/checkpoint.py#L224
+    ntok_new = posemb_new.shape[1]
+
+    posemb_grid = posemb[0]
+
+    gs_old_h = int(math.sqrt(len(posemb_grid) * hw_ratio))
+    gs_old_w = gs_old_h // hw_ratio
+
+    # print(len(posemb_grid), gs_old_w, gs_old_h)
+
+    print('Resized position embedding from size:{} to size: {} with height:{} width: {}'.format(posemb.shape,
+                                                                                                posemb_new.shape, hight,
+                                                                                                width))
+    posemb_grid = posemb_grid.reshape(1, gs_old_h, gs_old_w, -1).permute(0, 3, 1, 2)
+    posemb_grid = F.interpolate(posemb_grid, size=(hight, width), mode='bilinear')
+    posemb_grid = posemb_grid.permute(0, 2, 3, 1).reshape(1, hight * width, -1)
+    posemb = posemb_grid
+    return posemb
+
+class GeneralizedMeanPooling(nn.Module):
+    r"""Applies a 2D power-average adaptive pooling over an input signal composed of several input planes.
+    The function computed is: :math:`f(X) = pow(sum(pow(X, p)), 1/p)`
+        - At p = infinity, one gets Max Pooling
+        - At p = 1, one gets Average Pooling
+    The output is of size H x W, for any input size.
+    The number of output features is equal to the number of input planes.
+    Args:
+        output_size: the target output size of the image of the form H x W.
+                     Can be a tuple (H, W) or a single H for a square image H x H
+                     H and W can be either a ``int``, or ``None`` which means the size will
+                     be the same as that of the input.
+    """
+
+    def __init__(self, norm=3, output_size=1, eps=1e-6):
+        super(GeneralizedMeanPooling, self).__init__()
+        assert norm > 0
+        self.p = float(norm)
+        self.output_size = output_size
+        self.eps = eps
+
+    def forward(self, x):
+        x = x.clamp(min=self.eps).pow(self.p)
+        return F.adaptive_avg_pool1d(x, self.output_size).pow(1. / self.p)
+
+
+class IBN(nn.Module):
+    def __init__(self, planes):
+        super(IBN, self).__init__()
+        half1 = int(planes/2)
+        self.half = half1
+        half2 = planes - half1
+        self.IN = nn.InstanceNorm2d(half1, affine=True)
+        self.BN = nn.BatchNorm2d(half2)
+
+    def forward(self, x):
+        split = torch.split(x, self.half, 1)
+        out1 = self.IN(split[0].contiguous())
+        out2 = self.BN(split[1].contiguous())
+        out = torch.cat((out1, out2), 1)
+        return out
+
+class PatchEmbedzk(nn.Module):
+    """ Image to Patch Embedding with overlapping patches
+    """
+
+    def __init__(self, img_size=224, patch_size=16, stride_size=16, in_chans=3, embed_dim=768, stem_conv=False):
+        super().__init__()
+        img_size = to_2tuple(img_size)
+        patch_size = to_2tuple(patch_size)
+        stride_size_tuple = to_2tuple(stride_size)
+        self.num_x = (img_size[1] - patch_size[1]) // stride_size_tuple[1] + 1
+        self.num_y = (img_size[0] - patch_size[0]) // stride_size_tuple[0] + 1
+        print('using stride: {}, and patch number is num_y{} * num_x{}'.format(stride_size, self.num_y, self.num_x))
+        self.num_patches = self.num_x * self.num_y
+        self.img_size = img_size
+        self.patch_size = patch_size
+
+        self.stem_conv = stem_conv
+        if self.stem_conv:
+            hidden_dim = 64
+            stem_stride = 2
+            stride_size = patch_size = patch_size[0] // stem_stride
+            self.conv = nn.Sequential(
+                nn.Conv2d(in_chans, hidden_dim, kernel_size=7, stride=stem_stride, padding=3, bias=False),
+                IBN(hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, stride=1, padding=1, bias=False),
+                IBN(hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, stride=1, padding=1, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU(inplace=True),
+            )
+            in_chans = hidden_dim
+
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=stride_size)
+
+    def forward(self, x):
+        if self.stem_conv:
+            x = self.conv(x)
+        x = self.proj(x)
+        x = x.flatten(2).transpose(1, 2)  # [64, 8, 768]
+
+        return x
+
+class TransReIDZK(nn.Module):
+    """ Transformer-based Object Re-Identification
+    """
+
+    def __init__(self, img_size=224, patch_size=16, stride_size=16, in_chans=3, num_classes=1000, embed_dim=768,
+                 depth=12, num_heads=12, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
+                 camera=0, view=0, drop_path_rate=0., norm_layer=partial(nn.LayerNorm, eps=1e-6), local_feature=False,
+                 sie_xishu=1.0, hw_ratio=1, gem_pool=False, stem_conv=False):
+        super().__init__()
+        self.num_classes = num_classes
+        self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
+        self.local_feature = local_feature
+        self.patch_embed = PatchEmbedzk(
+            img_size=img_size, patch_size=patch_size, stride_size=stride_size, in_chans=in_chans,
+            embed_dim=embed_dim, stem_conv=stem_conv)
+
+        num_patches = self.patch_embed.num_patches
+
+        # self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        # self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.part_token1 = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.part_token2 = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.part_token3 = nn.Parameter(torch.zeros(1, 1, embed_dim))
+
+        self.cls_pos = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.part1_pos = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.part2_pos = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.part3_pos = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
+        self.cam_num = camera
+        self.view_num = view
+        self.sie_xishu = sie_xishu
+        self.in_planes = 768
+        self.gem_pool = gem_pool
+        if self.gem_pool:
+            print('using gem pooling')
+        # Initialize SIE Embedding
+        if camera > 1 and view > 1:
+            self.sie_embed = nn.Parameter(torch.zeros(camera * view, 1, embed_dim))
+            trunc_normal_(self.sie_embed, std=.02)
+        elif camera > 1:
+            self.sie_embed = nn.Parameter(torch.zeros(camera, 1, embed_dim))
+            trunc_normal_(self.sie_embed, std=.02)
+        elif view > 1:
+            self.sie_embed = nn.Parameter(torch.zeros(view, 1, embed_dim))
+            trunc_normal_(self.sie_embed, std=.02)
+
+        #  print('using drop_out rate is : {}'.format(drop_rate))
+        #  print('using attn_drop_out rate is : {}'.format(attn_drop_rate))
+        #  print('using drop_path rate is : {}'.format(drop_path_rate))
+
+        self.pos_drop = nn.Dropout(p=drop_rate)
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+
+        self.blocks = nn.ModuleList([
+            Block(
+                dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
+                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer)
+            for i in range(depth)])
+
+        self.norm = norm_layer(embed_dim)
+
+        # Classifier head
+        self.fc = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+        trunc_normal_(self.cls_token, std=.02)
+        trunc_normal_(self.pos_embed, std=.02)
+
+        self.apply(self._init_weights)
+        self.gem = GeneralizedMeanPooling()
+
+        # batchnormal
+        self.bottleneck = nn.BatchNorm1d(768)
+        self.bottleneck.bias.requires_grad_(False)
+        self.bottleneck.apply(weights_init_kaiming)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {'pos_embed', 'cls_token'}
+
+    def get_classifier(self):
+        return self.head
+
+    def reset_classifier(self, num_classes, global_pool=''):
+        self.num_classes = num_classes
+        self.fc = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+
+
+    def train(self, mode=True):
+        """Convert the model into training mode while keep layers freezed."""
+        super(TransReIDZK, self).train(mode)
+        self._freeze_stages()
+
+    def _freeze_stages(self):
+        """
+        冻结 self.blocks 模块
+        """
+        for param in self.blocks.parameters():
+            param.requires_grad = False
+
+    def forward_features(self, x, camera_id, view_id):
+        B = x.shape[0]
+        x = self.patch_embed(x)  # x [bs,128,768]
+
+        cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks [bs,1,768]
+        part_tokens1 = self.part_token1.expand(B, -1, -1)
+        part_tokens2 = self.part_token2.expand(B, -1, -1)
+        part_tokens3 = self.part_token3.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, part_tokens1, part_tokens2, part_tokens3, x), dim=1)
+
+        if self.cam_num > 0 and self.view_num > 0:
+            x = x + self.pos_embed + self.sie_xishu * self.sie_embed[camera_id * self.view_num + view_id]
+        elif self.cam_num > 0:
+            x = x + self.pos_embed + self.sie_xishu * self.sie_embed[camera_id]
+        elif self.view_num > 0:
+            x = x + self.pos_embed + self.sie_xishu * self.sie_embed[view_id]
+        else:
+            x = x + torch.cat((self.cls_pos, self.part1_pos, self.part2_pos, self.part3_pos, self.pos_embed),
+                              dim=1)  # 前四个是 1 1 768 后面是 1 128 768  一共是 1 132 768
+
+        x = self.pos_drop(x)
+
+        if self.local_feature:
+            for blk in self.blocks[:-1]:
+                x = blk(x)
+            return x
+        else:
+            for blk in self.blocks:
+                x = blk(x)
+
+            x = self.norm(x)
+        if self.gem_pool:
+            gf = self.gem(x[:, 1:].permute(0, 2, 1)).squeeze()
+            return x[:, 0] + gf
+        return x[:, 0], x[:, 1], x[:, 2], x[:, 3]
+
+    def forward(self, x, cam_label=None, view_label=None):
+        global_feat, local_feat_1, local_feat_2, local_feat_3 = self.forward_features(x, cam_label, view_label)
+        return global_feat, local_feat_1, local_feat_2, local_feat_3
+
+    def load_param(self, model_path, hw_ratio):
+        param_dict = torch.load(model_path, map_location='cpu')
+        count = 0
+        if 'model' in param_dict:
+            param_dict = param_dict['model']
+        if 'state_dict' in param_dict:
+            param_dict = param_dict['state_dict']
+        if 'teacher' in param_dict:  ### for dino
+            obj = param_dict["teacher"]
+            print('Convert dino model......')
+            newmodel = {}
+            for k, v in obj.items():
+                if k.startswith("module."):
+                    k = k.replace("module.", "")
+                if not k.startswith("backbone."):
+                    continue
+                old_k = k
+                k = k.replace("backbone.", "")
+                newmodel[k] = v
+                param_dict = newmodel
+        for k, v in param_dict.items():
+            if 'head' in k or 'dist' in k or 'pre_logits' in k:
+                continue
+            if 'patch_embed.proj.weight' in k and len(v.shape) < 4:
+                # For old models that I trained prior to conv based patchification
+                O, I, H, W = self.patch_embed.proj.weight.shape
+                v = v.reshape(O, -1, H, W)
+            elif k == 'pos_embed' and v.shape != self.pos_embed.shape:
+                # To resize pos embedding when using model at different size from pretrained weights
+                if 'distilled' in model_path:
+                    print('distill need to choose right cls token in the pth')
+                    v = torch.cat([v[:, 0:1], v[:, 2:]], dim=1)
+                v = resize_pos_embed_zk(v, self.pos_embed, self.patch_embed.num_y, self.patch_embed.num_x, hw_ratio)
+        #     try:
+        #         if k in self.state_dict():
+        #             self.state_dict()[k].copy_(v)
+        #             print(k, '已复制')
+        #             count += 1
+        #         else:
+        #             print(f"在当前模型的state_dict中未找到键 {k}。")
+        #     except Exception as e:
+        #         print('===========================错误=========================')
+        #         print(f"复制键{k}时出错: {e}")
+        #         print(f"预期的形状: {self.state_dict()[k].shape}, 加载的形状: {v.shape}")
+        # print(f'已加载 {count} / {len(self.state_dict().keys())} 层。')
+
+            try:
+                self.state_dict()[k].copy_(v)
+                print(k, 'copied')
+                count += 1
+            except:
+                print('===========================ERROR=========================')
+                print('shape do not match in k :{}: param_dict{} vs self.state_dict(){}'.format(k, v.shape,
+                                                                                                self.state_dict()[
+                                                                                                    k].shape))
+        print('Load %d / %d layers.' % (count, len(self.state_dict().keys())))

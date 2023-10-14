@@ -24,7 +24,7 @@ import collections.abc
 
 from torchvision.ops import roi_align
 
-from .transreid import TransReID
+from .transreid import TransReID,TransReIDZK
 # from ..make_model import weights_init_kaiming
 
 
@@ -1598,13 +1598,19 @@ class SwinTransformerPose(BaseModule):
                 self.semantic_embed_b.append(semantic_embed_b)
             self.softplus = nn.Softplus()
 
-        self.transreid = TransReID(
-        img_size=[256, 128], patch_size=16, stride_size=[16, 16], embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,\
-        camera=0,  drop_path_rate=0.1, drop_rate=0.0, attn_drop_rate=0.0,norm_layer=partial(nn.LayerNorm, eps=1e-6),  cam_lambda=3.0)
+        # self.transreid = TransReID(
+        # img_size=[256, 128], patch_size=16, stride_size=[16, 16], embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,\
+        # camera=0,  drop_path_rate=0.1, drop_rate=0.0, attn_drop_rate=0.0,norm_layer=partial(nn.LayerNorm, eps=1e-6),  cam_lambda=3.0)
+        # state_dict_imagenet = torch.load('jx_vit_base_p16_224-80ecf9dd.pth', map_location='cpu')
+        # self.transreid.load_param(state_dict_imagenet, load=True)  # 给模型加载这些参数
 
+        self.transreid = TransReIDZK(
+            img_size=[384, 128], sie_xishu= 3.0,stride_size=[16, 16],patch_size=16,embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+            camera=0,view = 0, drop_path_rate=0.1, drop_rate=0.0, attn_drop_rate=0.0, gem_pool=False, stem_conv=False)
 
-        state_dict_imagenet = torch.load('jx_vit_base_p16_224-80ecf9dd.pth', map_location='cpu')
-        self.transreid.load_param(state_dict_imagenet, load=True)  # 给模型加载这些参数
+        modelpass_path = 'pass_vit_base_full.pth'
+        self.transreid.load_param(modelpass_path, hw_ratio=2)
+
 
         from ..make_model import weights_init_kaiming
         self.dimdown1 = nn.Linear(24*8*128,768)
@@ -1887,8 +1893,9 @@ class SwinTransformerPose(BaseModule):
                 keypointsfeature = featureforvit4.mean(dim=1)
 
                 keypointsfeature = self.transreid.bottleneck(keypointsfeature)
-            else:
 
+
+            else:
                 i = 0
                 stage = self.stages[i]
                 x, hw_shape, out, out_hw_shape = stage(x, hw_shape)

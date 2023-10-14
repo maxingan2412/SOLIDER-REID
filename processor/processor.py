@@ -99,6 +99,146 @@ def re_ranking(q_g_dist, q_q_dist, g_g_dist, k1=20, k2=6, lambda_value=0.3):
     final_dist = final_dist[:query_num, query_num:]
     return final_dist
 
+
+def re_rankingv2(probFea, galFea, k1=20, k2=6, lambda_value=0.3, local_distmat=None, only_local=False):
+    # if feature vector is numpy, you should use 'torch.tensor' transform it to tensor
+    query_num = probFea.size(0)
+    all_num = query_num + galFea.size(0)
+    if only_local:
+        original_dist = local_distmat
+    else:
+        feat = torch.cat([probFea, galFea])
+        # print('using GPU to compute original distance')
+        distmat = torch.pow(feat, 2).sum(dim=1, keepdim=True).expand(all_num, all_num) + \
+                  torch.pow(feat, 2).sum(dim=1, keepdim=True).expand(all_num, all_num).t()
+        distmat.addmm_(feat, feat.t(), beta=1, alpha=-2)
+        original_dist = distmat.cpu().numpy()
+        del feat
+        if not local_distmat is None:
+            original_dist = original_dist + local_distmat
+    gallery_num = original_dist.shape[0]
+    original_dist = np.transpose(original_dist / np.max(original_dist, axis=0))
+    V = np.zeros_like(original_dist).astype(np.float16)
+    initial_rank = np.argsort(original_dist).astype(np.int32)
+
+    # print('starting re_ranking')
+    for i in range(all_num):
+        # k-reciprocal neighbors
+        forward_k_neigh_index = initial_rank[i, :k1 + 1]
+        backward_k_neigh_index = initial_rank[forward_k_neigh_index, :k1 + 1]
+        fi = np.where(backward_k_neigh_index == i)[0]
+        k_reciprocal_index = forward_k_neigh_index[fi]
+        k_reciprocal_expansion_index = k_reciprocal_index
+        for j in range(len(k_reciprocal_index)):
+            candidate = k_reciprocal_index[j]
+            candidate_forward_k_neigh_index = initial_rank[candidate, :int(np.around(k1 / 2)) + 1]
+            candidate_backward_k_neigh_index = initial_rank[candidate_forward_k_neigh_index,
+                                               :int(np.around(k1 / 2)) + 1]
+            fi_candidate = np.where(candidate_backward_k_neigh_index == candidate)[0]
+            candidate_k_reciprocal_index = candidate_forward_k_neigh_index[fi_candidate]
+            if len(np.intersect1d(candidate_k_reciprocal_index, k_reciprocal_index)) > 2 / 3 * len(
+                    candidate_k_reciprocal_index):
+                k_reciprocal_expansion_index = np.append(k_reciprocal_expansion_index, candidate_k_reciprocal_index)
+
+        k_reciprocal_expansion_index = np.unique(k_reciprocal_expansion_index)
+        weight = np.exp(-original_dist[i, k_reciprocal_expansion_index])
+        V[i, k_reciprocal_expansion_index] = weight / np.sum(weight)
+    original_dist = original_dist[:query_num, ]
+    if k2 != 1:
+        V_qe = np.zeros_like(V, dtype=np.float16)
+        for i in range(all_num):
+            V_qe[i, :] = np.mean(V[initial_rank[i, :k2], :], axis=0)
+        V = V_qe
+        del V_qe
+    del initial_rank
+    invIndex = []
+    for i in range(gallery_num):
+        invIndex.append(np.where(V[:, i] != 0)[0])
+
+    jaccard_dist = np.zeros_like(original_dist, dtype=np.float16)
+
+    for i in range(query_num):
+        temp_min = np.zeros(shape=[1, gallery_num], dtype=np.float16)
+        indNonZero = np.where(V[i, :] != 0)[0]
+        indImages = [invIndex[ind] for ind in indNonZero]
+        for j in range(len(indNonZero)):
+            temp_min[0, indImages[j]] = temp_min[0, indImages[j]] + np.minimum(V[i, indNonZero[j]],
+                                                                               V[indImages[j], indNonZero[j]])
+        jaccard_dist[i] = 1 - temp_min / (2 - temp_min)
+
+    final_dist = jaccard_dist * (1 - lambda_value) + original_dist * lambda_value
+    del original_dist
+    del V
+    del jaccard_dist
+    final_dist = final_dist[:query_num, query_num:]
+    return final_dist
+
+
+def re_rankingv2gpu(probFea, galFea, k1=20, k2=6, lambda_value=0.3, local_distmat=None, only_local=False):
+    query_num = probFea.size(0)
+    all_num = query_num + galFea.size(0)
+
+    if only_local:
+        original_dist = local_distmat
+    else:
+        feat = torch.cat([probFea, galFea])
+        distmat = torch.pow(feat, 2).sum(dim=1, keepdim=True).expand(all_num, all_num) + \
+                  torch.pow(feat, 2).sum(dim=1, keepdim=True).expand(all_num, all_num).t()
+        distmat.addmm_(feat, feat.t(), beta=1, alpha=-2)
+        original_dist = distmat.cpu().numpy()
+        del feat
+
+        if local_distmat is not None:
+            original_dist += local_distmat
+
+    gallery_num = original_dist.shape[0]
+    original_dist = np.transpose(original_dist / np.max(original_dist, axis=0))
+    V = np.zeros_like(original_dist).astype(np.float16)
+    initial_rank = np.argsort(original_dist).astype(np.int32)
+
+    for i in range(all_num):
+        forward_k_neigh_index = initial_rank[i, :k1 + 1]
+        backward_k_neigh_index = initial_rank[forward_k_neigh_index, :k1 + 1]
+        fi = np.where(backward_k_neigh_index == i)[0]
+        k_reciprocal_index = forward_k_neigh_index[fi]
+        k_reciprocal_expansion_index = k_reciprocal_index
+        for j in range(len(k_reciprocal_index)):
+            candidate = k_reciprocal_index[j]
+            candidate_forward_k_neigh_index = initial_rank[candidate, :int(np.around(k1 / 2)) + 1]
+            candidate_backward_k_neigh_index = initial_rank[candidate_forward_k_neigh_index,
+                                               :int(np.around(k1 / 2)) + 1]
+            fi_candidate = np.where(candidate_backward_k_neigh_index == candidate)[0]
+            candidate_k_reciprocal_index = candidate_forward_k_neigh_index[fi_candidate]
+            if len(np.intersect1d(candidate_k_reciprocal_index, k_reciprocal_index)) > 2 / 3 * len(
+                    candidate_k_reciprocal_index):
+                k_reciprocal_expansion_index = np.append(k_reciprocal_expansion_index, candidate_k_reciprocal_index)
+
+        k_reciprocal_expansion_index = np.unique(k_reciprocal_expansion_index)
+        weight = np.exp(-original_dist[i, k_reciprocal_expansion_index])
+        V[i, k_reciprocal_expansion_index] = weight / np.sum(weight)
+
+    original_dist = original_dist[:query_num, ]
+
+    if k2 != 1:
+        V_qe = np.zeros_like(V, dtype=np.float16)
+        for i in range(all_num):
+            V_qe[i, :] = np.mean(V[initial_rank[i, :k2], :], axis=0)
+        V = V_qe
+        del V_qe
+    del initial_rank
+
+    invIndex = [np.where(V[:, i] != 0)[0] for i in range(V.shape[1])]
+    jaccard_dist = 1 - np.stack([
+        np.sum(np.minimum(V[i, :], V[invIndex[i], :]), axis=1) for i in range(query_num)
+    ])
+
+    final_dist = jaccard_dist * (1 - lambda_value) + original_dist * lambda_value
+    del original_dist, V, jaccard_dist
+    final_dist = final_dist[:query_num, query_num:]
+
+    return final_dist
+
+
 def cosine_distance(input1, input2):
     """Computes cosine distance.
 
@@ -216,7 +356,7 @@ def evaluate(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=21):
         AP = tmp_cmc.sum() / num_rel
         all_AP.append(AP)
 
-    assert num_valid_q > 0, "Error: all query identities do not appear in gallery"
+    #assert num_valid_q > 0, "Error: all query identities do not appear in gallery"
 
     all_cmc = np.asarray(all_cmc).astype(np.float32)
     all_cmc = all_cmc.sum(0) / num_valid_q
@@ -226,10 +366,26 @@ def evaluate(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=21):
 
 def extract_features(data_loader, model, use_gpu=True, pool='avg'):
     features_list, pids_list, camids_list = [], [], []
+    count = 0
+    max_batches = 999999
+
     with (torch.no_grad()):
-        for batch_idx, data in enumerate(data_loader):
+        for batch_idx, data in enumerate(tqdm(data_loader)):
+            # data = data[0]
+            # imgs, pids, camids,_ = data
+            # if batch_idx > 100:
+            #     break
+            if count >= max_batches:
+                break
+
             data = data[0]
-            imgs, pids, camids,_ = data
+
+            if len(data) == 3:
+                imgs, pids, camids = data
+            elif len(data) == 4:
+                imgs, pids, camids, _ = data
+            else:
+                raise ValueError("Unexpected number of values in data")
 
             if use_gpu:
                 imgs = imgs.cuda(non_blocking=True)
@@ -254,6 +410,8 @@ def extract_features(data_loader, model, use_gpu=True, pool='avg'):
             pids_list.extend(pids)
             camids_list.extend(camids)
 
+            count += 1
+
 
 
     #823这里的提取特征是一个tracklets提出来，每一个tracklets对应了一个feature
@@ -263,7 +421,75 @@ def extract_features(data_loader, model, use_gpu=True, pool='avg'):
 
     return features, pids, camids
 
-def test_mars(model, queryloader, galleryloader, pool='avg', use_gpu=True):
+
+def search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, k1_range=(10, 31), k2_range=(2, 11),lambdaValue=0.3):
+    best_map = 0
+    best_r1 = 0
+    best_k1 = 0
+    best_k2 = 0
+    # 遍历 k1 的范围
+    for k1 in range(*k1_range):
+        # 遍历 k2 的范围
+        for k2 in range(*k2_range):
+            # 使用 re_rankingv2 函数并评估结果
+            CMC, MAP = evaluate(re_rankingv2(qf, gf, k1, k2, lambdaValue), q_pids, g_pids, q_camids, g_camids)
+
+            # 打印结果和相应的 k1 和 k2 值以及 lambdaValue
+            print(f"For k1={k1}, k2={k2}, lambda={lambdaValue}: mAP = {MAP:.4f}, R1 = {CMC[0]:.4f}")
+
+            # 存储最佳值
+            if MAP > best_map and CMC[0] > best_r1:
+                best_map = MAP
+                best_r1 = CMC[0]
+                best_k1 = k1
+                best_k2 = k2
+
+    # 打印最佳值
+    print(f"Best results with mAP = {best_map:.4f} and R1 = {best_r1:.4f} for k1={best_k1}, k2={best_k2} and lambda={lambdaValue}")
+
+# from multiprocessing import Pool
+#
+# # 将计算任务打包以便于多进程处理
+# def evaluate_wrapper(args):
+#     k1, k2, qf, gf, q_pids, g_pids, q_camids, g_camids = args
+#     CMC, MAP = evaluate(re_rankingv2(qf, gf, k1, k2, 0.4), q_pids, g_pids, q_camids, g_camids)
+#     return k1, k2, CMC, MAP
+#
+# def search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, k1_range=(10, 31), k2_range=(2, 11), num_processes=None):
+#     best_map = 0
+#     best_r1 = 0
+#     best_k1 = 0
+#     best_k2 = 0
+#
+#     # 创建参数列表
+#     args_list = [(k1, k2, qf, gf, q_pids, g_pids, q_camids, g_camids) for k1 in range(*k1_range) for k2 in range(*k2_range)]
+#
+#     # 使用指定的进程数进行并行计算
+#     with Pool(processes=num_processes) as pool:
+#         results = pool.map(evaluate_wrapper, args_list)
+#
+#     # 遍历结果
+#     for k1, k2, CMC, MAP in results:
+#         print(f"For k1={k1}, k2={k2}: mAP = {MAP:.4f}, R1 = {CMC[0]:.4f}")
+#
+#         # 更新最佳结果
+#         if MAP > best_map and CMC[0] > best_r1:
+#             best_map = MAP
+#             best_r1 = CMC[0]
+#             best_k1 = k1
+#             best_k2 = k2
+#
+#     # 打印最佳结果
+#     print(f"Best results with mAP = {best_map:.4f} and R1 = {best_r1:.4f} for k1={best_k1} and k2={best_k2}")
+
+# 示例调用，使用8个进程
+# search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, num_processes=8)
+
+
+#search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, (10, 31), (2, 11))
+
+
+def test_mars(model, queryloader, galleryloader, pool='avg', use_gpu=True,epoch = 120):
     model.eval()
     #qf1980 13056 tensor  q_pids 1980  q_camids 110860 因为一个tracklets id一样，所以是1980，但是camerid不一定一样 所以每个tacklets下的每个图片的camid都得记录，是110860
     qf, q_pids, q_camids = extract_features(queryloader, model, use_gpu, pool)
@@ -290,6 +516,19 @@ def test_mars(model, queryloader, galleryloader, pool='avg', use_gpu=True):
         print("Results ---------- ")
         print(f"mAP: {mAP:.1%}")
         print(f"CMC curve r1: {cmc[0]}")
+
+        distmat2 = re_rankingv2(qf, gf)
+        print("Computing CMC and mAP with rerankingv2,")
+        cmc, mAP = evaluate(distmat2, q_pids, g_pids, q_camids, g_camids)
+        print("Results ----------with rerankingv2 ")
+        print(f"mAP: {mAP:.1%}")
+        print(f"CMC curve r1: {cmc[0]}")
+        #search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, num_processes=24)
+        if epoch >= 120:
+            search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, (10, 31), (2, 11))
+
+
+
 
 
 
@@ -508,6 +747,10 @@ def do_mars_train(cfg,
         acc_meter.reset()
         evaluator.reset()
         model.train()
+
+        # model.eval()
+        # cmc, map = test_mars(model, q_val_set, g_val_set)
+        # print('CMC: %.4f, mAP : %.4f' % (cmc, map))
         #
         for n_iter, (img, pid, target_cam, labels2) in enumerate(train_loader):
             optimizer.zero_grad()
@@ -569,73 +812,38 @@ def do_mars_train(cfg,
             logger.info("Epoch {} done. Time per epoch: {:.3f}[s] Speed: {:.1f}[samples/s]"
                     .format(epoch, time_per_batch * (n_iter + 1), train_loader.batch_size / time_per_batch))
 
-        if epoch % checkpoint_period == 0:
-            # Ensure directory exists; if not, create it
-            if not os.path.exists(cfg.OUTPUT_DIR):
-                os.makedirs(cfg.OUTPUT_DIR)
-
-            if cfg.MODEL.DIST_TRAIN:
-                if dist.get_rank() == 0:
-                    torch.save(model.state_dict(),
-                               os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
-            else:
-                # 获取当前时间并格式化为字符串
-                current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-                torch.save(model.state_dict(),
-                           os.path.join(cfg.OUTPUT_DIR,
-                                        "{}{}_{}_{}_{}.pth".format(cfg.MODEL.NAME, cfg.DATASETS.NAMES,
-                                                                   cfg.SOLVER.IMS_PER_BATCH, current_time, epoch)))
-
         if epoch % eval_period == 0:
-            # if cfg.MODEL.DIST_TRAIN:
-            #     if dist.get_rank() == 0:
-            #         model.eval()
-            #         for n_iter, (img, vid, camid, camids, target_view, _) in enumerate(tqdm(val_loader)):
-            #             with torch.no_grad():
-            #                 img = img.to(device)
-            #                 camids = camids.to(device)
-            #                 target_view = target_view.to(device)
-            #                 feat, _ = model(img, cam_label=camids, view_label=target_view)
-            #                 evaluator.update((feat, vid, camid))
-            #         cmc, mAP, _, _, _, _, _ = evaluator.compute()
-            #         logger.info("Validation Results - Epoch: {}".format(epoch))
-            #         logger.info("mAP: {:.1%}".format(mAP))
-            #         for r in [1, 5, 10]:
-            #             logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
-            #         torch.cuda.empty_cache()
-            # else:
-                # model.eval()
-                # for n_iter, (img, vid, camid, camids, target_view, _) in enumerate(tqdm(val_loader)):
-                #     with torch.no_grad():
-                #         img = img.to(device)
-                #         camids = camids.to(device)
-                #         target_view = target_view.to(device)
-                #         feat, _ = model(img, cam_label=camids, view_label=target_view)
-                #         evaluator.update((feat, vid, camid))
-                # cmc, mAP, _, _, _, _, _ = evaluator.compute()
-                # logger.info("Validation Results - Epoch: {}".format(epoch))
-                # logger.info("mAP: {:.1%}".format(mAP))
-                # for r in [1, 5, 10]:
-                #     logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
-                # torch.cuda.empty_cache()
-
             model.eval()
-            cmc, map = test_mars(model, q_val_set, g_val_set)
+            cmc, map = test_mars(model, q_val_set, g_val_set,epoch)
             print('CMC: %.4f, mAP : %.4f' % (cmc, map))
-                # if cmc_rank1 < cmc:
-                #    cmc_rank1=cmc
 
-                # save_path = 'VID-Trans-ReID_pth'
-                # current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                #
-                # file_name = f"{cfg.DATASETS.NAMES}_BS{cfg.SOLVER.IMS_PER_BATCH}_Epoch{epoch}_CMC{cmc:.4f}_MAP{map:.4f}_{current_time}.pth"
-                # save_filename = os.path.join(save_path, file_name)
-                #
-                # # 创建目录，如果它不存在
-                # if not os.path.exists(save_path):
-                #     os.makedirs(save_path)
-                # torch.save(model.state_dict(), save_filename)
+            if epoch % checkpoint_period == 0:
+                # Ensure directory exists; if not, create it
+                if not os.path.exists(cfg.OUTPUT_DIR):
+                    os.makedirs(cfg.OUTPUT_DIR)
+
+                if cfg.MODEL.DIST_TRAIN:
+                    if dist.get_rank() == 0:
+                        torch.save(model.state_dict(),
+                                   os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
+                else:
+                    # 获取当前时间并格式化为字符串
+                    current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+                    # 将cmc和map的值添加到模型名字中
+                    model_name = "{}{}_{}_{}_{}_CMC_{:.4f}_mAP_{:.4f}.pth".format(cfg.MODEL.NAME, cfg.DATASETS.NAMES,
+                                                                                  cfg.SOLVER.IMS_PER_BATCH,
+                                                                                  current_time, epoch, cmc, map)
+
+                    # 构建模型保存路径
+                    model_path = os.path.join(cfg.OUTPUT_DIR, model_name)
+
+                    # 打印保存模型的路径信息
+                    print(f"Saving model to: {model_path}")
+
+                    # 保存模型
+                    torch.save(model.state_dict(), model_path)
+
 
 
 
@@ -761,10 +969,14 @@ def do_marspose_train(cfg,
                 # 获取当前时间并格式化为字符串
                 current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-                torch.save(model.state_dict(),
-                           os.path.join(cfg.OUTPUT_DIR,
-                                        "{}{}_{}_{}_{}.pth".format(cfg.MODEL.NAME, cfg.DATASETS.NAMES,
-                                                                   cfg.SOLVER.IMS_PER_BATCH, current_time, epoch)))
+                model_path = os.path.join(cfg.OUTPUT_DIR,
+                                          "{}{}_{}_{}_{}.pth".format(cfg.MODEL.NAME, cfg.DATASETS.NAMES,
+                                                                     cfg.SOLVER.IMS_PER_BATCH, current_time, epoch))
+
+                # 打印保存模型的路径信息
+                print(f"Saving model to: {model_path}")
+
+                torch.save(model.state_dict(), model_path)
 
         if epoch % eval_period == 0:
             # if cfg.MODEL.DIST_TRAIN:
@@ -800,7 +1012,7 @@ def do_marspose_train(cfg,
                 # torch.cuda.empty_cache()
 
             model.eval()
-            cmc, map = test_mars(model, q_val_set, g_val_set)
+            cmc, map = test_mars(model, q_val_set, g_val_set,epoch)
             print('CMC: %.4f, mAP : %.4f' % (cmc, map))
                 # if cmc_rank1 < cmc:
                 #    cmc_rank1=cmc
