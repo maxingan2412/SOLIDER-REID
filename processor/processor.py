@@ -683,6 +683,8 @@ def do_mars_train(cfg,
     checkpoint_period = cfg.SOLVER.CHECKPOINT_PERIOD
     eval_period = cfg.SOLVER.EVAL_PERIOD
 
+    clusting_feature = False ##############混合的feature
+
     device = "cuda"
     epochs = cfg.SOLVER.MAX_EPOCHS
 
@@ -721,13 +723,21 @@ def do_mars_train(cfg,
             labels2 = labels2.to(device)
             with amp.autocast(enabled=True):
                 target_cam = target_cam.view(-1)
-                score, feat, _ = model(img, label=target, cam_label=target_cam)
+
+                score, feat, _ = model(img, label=target, cam_label=target_cam,clusting_feature=clusting_feature)
 
                 #为了适应 swin的形状 给 target变成4倍
                 #target = torch.repeat_interleave(target, repeats=4)
                 #target = target.repeat(4)
+                if clusting_feature:
+                    loss = loss_fn(score[0], feat[0], target, target_cam)
+                    loss1 = loss_fn(score[1], feat[1], target, target_cam)
+                    loss2 = loss_fn(score[2], feat[2], target, target_cam)
+                    loss3 = loss_fn(score[3], feat[3], target, target_cam)
+                    loss = loss + (loss1 + loss2 + loss3) / 3
+                else:
 
-                loss = loss_fn(score, feat, target, target_cam) #实际没用上 target_cam，vid里面的loss也没用和这个
+                    loss = loss_fn(score, feat, target, target_cam) #实际没用上 target_cam，vid里面的loss也没用和这个
 
             scaler.scale(loss).backward()
 

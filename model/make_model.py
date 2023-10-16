@@ -9,6 +9,7 @@ from .backbones.resnet_ibn_a import resnet50_ibn_a,resnet101_ibn_a
 import torch.nn.functional as F
 import numpy as np
 from sklearn.cluster import KMeans,MeanShift,estimate_bandwidth
+import random
 
 class SelfAttentionPooling(nn.Module):
     """
@@ -51,7 +52,7 @@ def get_mask(features,clsnum):
 
         # foreground/background cluster
         _x = np.linalg.norm(x,axis=1,keepdims=True) #计算每行的L2范数并保留维度, l2范数就是平方和开根号
-        km = KMeans(n_clusters=2, random_state=0).fit(_x)
+        km = KMeans(n_clusters=2, n_init=10, random_state=0).fit(_x)
         bg_mask = km.labels_
         ctrs = km.cluster_centers_
         if ctrs[0][0] > ctrs[1][0]:
@@ -63,7 +64,7 @@ def get_mask(features,clsnum):
 
         # pixel cluster
         _x = x[idx]
-        cluster = KMeans(n_clusters=clsnum, random_state=0).fit(_x)
+        cluster = KMeans(n_clusters=clsnum, n_init=10, random_state=0).fit(_x)
         _res = cluster.labels_
         res = np.zeros(h*w)
         res[idx] = _res + 1
@@ -84,6 +85,67 @@ def get_mask(features,clsnum):
     mask_idxs = np.hstack(mask_idxs) if len(mask_idxs) > 0 else np.zeros(0)
     return masks, mask_idxs
 
+
+def extract_tensor_based_on_values(aa, cc):
+    """
+    根据给定的值从张量aa中提取相应的部分。
+
+    参数:
+        aa (torch.Tensor): 输入张量，形状为 [seq, 1024, 12, 4]
+        cc (torch.Tensor): mask张量，形状为 [seq, 12, 4]
+
+    返回:
+        three tensors: 对应于cc中值1、2、3的提取结果，每个形状都是 [1024, n]，其中n是cc中对应值的数量
+    """
+
+    def extract_value(value, aa, cc):
+        temp_results = []
+        for aa_batch, cc_batch in zip(aa, cc):
+            indices = torch.where(cc_batch == value)
+            # 获取符合条件的张量切片
+            masked_data = aa_batch[:, indices[0], indices[1]]
+            temp_results.append(masked_data.reshape(-1, masked_data.shape[-1]))
+
+        all_results = torch.cat(temp_results, dim=1)
+        return all_results
+
+    result1 = extract_value(1, aa, cc)
+    result2 = extract_value(2, aa, cc)
+    result3 = extract_value(3, aa, cc)
+
+    return result1, result2, result3
+
+
+def swap_patches(tensor, num_patches=2):
+    """
+    Swap random patches within the second dimension (of size 4) of the tensor.
+
+    Parameters:
+    - tensor: the input tensor of shape (16, 4, 1024, 12, 4)
+    - num_patches: number of patches to be swapped
+
+    Returns:
+    - tensor with swapped patches
+    """
+    # Assuming the input tensor shape is (16, 4, 1024, 12, 4)
+    batch_size, t, c, h, w = tensor.shape
+
+    # We'll work with each item in the batch separately
+    for i in range(batch_size):
+        # Randomly choose "num_patches" from the (12, 4) dimension
+        patch_indices = torch.randperm(h * w)[:num_patches].tolist()
+
+        # Get the (h, w) indices for the chosen patches
+        patch_coords = [(idx // w, idx % w) for idx in patch_indices]
+
+        # Randomly shuffle the second dimension (of size 4)
+        t_permutation = torch.randperm(t)
+
+        # Perform the swapping
+        for x, y in patch_coords:
+            tensor[i, :, :, x, y] = tensor[i, t_permutation, :, x, y]
+
+    return tensor
 def shuffle_unit(features, shift, group, begin=1):
 
     batchsize = features.size(0)
@@ -408,8 +470,9 @@ class build_mars_transformer(nn.Module):
         #if pretrain_choice == 'self':
         #    self.load_param(model_path)
     # input : x tensor bs,3,h,w | label tensor bs  cam_label tensor bs, view_label tensor bs   . x是一个batch的 img label 是personid ， camlabel是camid viewlabel是viewid，在market1501中，camid是1-6，viewid是1-6，personid都是1
-    def forward(self, x, label=None, cam_label= None, view_label=None):
+    def forward(self, x, label=None, cam_label= None, view_label=None,clusting_feature=False):
         model_jpm = False
+        #clusting_feature = True
 
         b=x.size(0) # batch size 32
         t=x.size(1) # seq 4
@@ -419,9 +482,60 @@ class build_mars_transformer(nn.Module):
 
         global_feat, featmaps = self.base(x) #如果是swin global 对应这 vid里的feat 也就是再来个 classifier就到score了
 
+        # ####随便混合一下
+        # featmap_last = featmaps[-1]
+        # featmap_last = featmap_last.view(b, t, featmap_last.size(1), featmap_last.size(2), featmap_last.size(3))
+        #
+        # featmap_last = swap_patches(featmap_last, num_patches=random.randint(0, 48))
+        #
+        # featmap_last = self.avgpool(featmap_last[-1]) # x就是 featue的最后一位的avgpool feature是64 1024 12 4
+        # featmap_last = torch.flatten(featmap_last, 1)
+        # global_feat = featmap_last
+
+
+        global_feat = torch.mean(global_feat.view(-1, t, 1024), dim=1)
+
+        if clusting_feature:
+            featmap_last = featmaps[-1]
+            featmap_last = featmap_last.view(b,t,featmap_last.size(1),featmap_last.size(2),featmap_last.size(3))
+            part1_features = []
+            part2_features = []
+            part3_features = []
+            for i in range(b):
+                featmap_single = featmap_last[i]
+                mask = get_mask(featmap_single, 3)
+                mask_index = torch.from_numpy(mask[-1]).to(featmap_last.device)
+                if mask_index.numel() != 0:
+                    featmap_single = featmap_single[mask_index]
+                    mask_tensor = torch.from_numpy(mask[0]).to(featmap_last.device)
+                    part1_feature = extract_tensor_based_on_values(featmap_single, mask_tensor)[0]
+                    part2_feature = extract_tensor_based_on_values(featmap_single, mask_tensor)[1]
+                    part3_feature = extract_tensor_based_on_values(featmap_single, mask_tensor)[2]
+
+                    part1_feature = torch.mean(part1_feature,dim=1)
+                    part2_feature = torch.mean(part2_feature,dim=1)
+                    part3_feature = torch.mean(part3_feature,dim=1)
+                else:
+                    part1_feature = global_feat[i]
+                    part2_feature = global_feat[i]
+                    part3_feature = global_feat[i]
+
+                part1_features.append(part1_feature)
+                part2_features.append(part2_feature)
+                part3_features.append(part3_feature)
+
+
+
+            part1_features = torch.stack(part1_features)
+            part2_features = torch.stack(part2_features)
+            part3_features = torch.stack(part3_features)
+
+
+
+
 
         #变回bs * dim的形式，新加入
-        global_feat = torch.mean(global_feat.view(-1,t,1024),dim=1)
+        # global_feat = torch.mean(global_feat.view(-1,t,1024),dim=1)
 
         #self-attention pooling
         #global_feat = self.attention_pooling(global_feat.view(-1,t,1024))
@@ -431,21 +545,42 @@ class build_mars_transformer(nn.Module):
                 global_feat = self.fcneck(global_feat)
             feat = self.bottleneck(global_feat)
             feat_cls = self.dropout(feat)
+            if clusting_feature:
+                part1_feat = self.bottleneck(part1_features)
+                part2_feat = self.bottleneck(part2_features)
+                part3_feat = self.bottleneck(part3_features)
+                part1_feat_cls = self.dropout(part1_feat)
+                part2_feat_cls = self.dropout(part2_feat)
+                part3_feat_cls = self.dropout(part3_feat)
 
             if self.training:
                 if self.ID_LOSS_TYPE in ('arcface', 'cosface', 'amsoftmax', 'circle'):
                     cls_score = self.classifier(feat_cls, label)
                 else:
-                    cls_score = self.classifier(feat_cls)
+                    if clusting_feature:
+                        cls_score = self.classifier(feat_cls)
+                        cls_score_part1 = self.classifier(part1_feat_cls)
+                        cls_score_part2 = self.classifier(part2_feat_cls)
+                        cls_score_part3 = self.classifier(part3_feat_cls)
+                        return [cls_score,cls_score_part1,cls_score_part2,cls_score_part3], [global_feat,part1_features,part2_features,part3_features], featmaps
+                    else:
+                        cls_score = self.classifier(feat_cls)
+                        return cls_score, global_feat, featmaps
+
                 # output cls_score tensor bs pid_num(625) , global_feat bs 1024, featmaps list 4 features 128 96 32 ,  256 48 16, 512 24 8, 1024 12 4
-                return cls_score, global_feat, featmaps  # global feature for triplet loss,输出位
+                #return cls_score, global_feat, featmaps  # global feature for triplet loss,输出位
             else:
                 if self.neck_feat == 'after':
                     #print("Test with feature after BN")
                     return feat, featmaps
                 else:
                     #print("Test with feature before BN")
-                    return global_feat, featmaps #输出位
+                    if clusting_feature:
+                        return global_feat + (part1_features + part2_features + part3_features) / 3 , featmaps
+                    else:
+                        return global_feat, featmaps
+
+                    #return global_feat, featmaps #输出位
         # else:
 
 

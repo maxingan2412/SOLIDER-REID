@@ -26,6 +26,8 @@ from torchvision.ops import roi_align
 
 from .transreid import TransReID,TransReIDZK
 # from ..make_model import weights_init_kaiming
+import random
+
 
 
 def _ntuple(n):
@@ -123,6 +125,37 @@ def build_norm_layer(norm_cfg,embed_dims):
     assert norm_cfg['type'] == 'LN'
     norm_layer = nn.LayerNorm(embed_dims)
     return norm_cfg['type'],norm_layer
+
+def swap_patches(tensor, num_patches=2):
+    """
+    Swap random patches within the second dimension (of size 4) of the tensor.
+
+    Parameters:
+    - tensor: the input tensor of shape (16, 4, 1024, 12, 4)
+    - num_patches: number of patches to be swapped
+
+    Returns:
+    - tensor with swapped patches
+    """
+    # Assuming the input tensor shape is (16, 4, 1024, 12, 4)
+    batch_size, t, c, h, w = tensor.shape
+
+    # We'll work with each item in the batch separately
+    for i in range(batch_size):
+        # Randomly choose "num_patches" from the (12, 4) dimension
+        patch_indices = torch.randperm(h * w)[:num_patches].tolist()
+
+        # Get the (h, w) indices for the chosen patches
+        patch_coords = [(idx // w, idx % w) for idx in patch_indices]
+
+        # Randomly shuffle the second dimension (of size 4)
+        t_permutation = torch.randperm(t)
+
+        # Perform the swapping
+        for x, y in patch_coords:
+            tensor[i, :, :, x, y] = tensor[i, t_permutation, :, x, y]
+
+    return tensor
 
 class GELU(nn.Module):
     r"""Applies the Gaussian Error Linear Units function:
@@ -1366,6 +1399,8 @@ class SwinTransformer(BaseModule):
             res = self.load_state_dict(state_dict, False)
             print('unloaded parameters:', res)
 
+
+
     def forward(self, x, semantic_weight=None):
         if self.semantic_weight >= 0 and semantic_weight == None:
             w = torch.ones(x.shape[0],1) * self.semantic_weight
@@ -1394,7 +1429,22 @@ class SwinTransformer(BaseModule):
                 outs.append(out)
         x = self.avgpool(outs[-1]) # x就是 featue的最后一位的avgpool feature是64 1024 12 4
         x = torch.flatten(x, 1)
-        return x, outs # x:bs,1024, outs list 4
+
+        hunhe = True
+        ####随便混合一下
+        if hunhe:
+            featmap_last = outs[-1]
+            featmap_last = featmap_last.view(-1, 4, featmap_last.size(1), featmap_last.size(2), featmap_last.size(3))
+
+            featmap_last = swap_patches(featmap_last, num_patches=random.randint(0, 48))
+
+            featmap_last = featmap_last.view(-1, featmap_last.size(2), featmap_last.size(3), featmap_last.size(4))
+            featmap_last = self.avgpool(featmap_last)  # x就是 featue的最后一位的avgpool feature是64 1024 12 4
+            featmap_last = torch.flatten(featmap_last, 1)
+            return featmap_last,outs
+        else:
+
+            return x, outs # x:bs,1024, outs list 4
 
 
 
