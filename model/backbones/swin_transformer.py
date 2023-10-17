@@ -1401,13 +1401,47 @@ class SwinTransformer(BaseModule):
 
 
 
-    def forward(self, x, semantic_weight=None):
-        if self.semantic_weight >= 0 and semantic_weight == None:
-            w = torch.ones(x.shape[0],1) * self.semantic_weight
-            w = torch.cat([w, 1-w], axis=-1)
-            semantic_weight = w.cuda()
+    def forward(self, x, semantic_weight=None,batchsize=16,seq_len=4,video=False):
 
-        x, hw_shape = self.patch_embed(x)
+
+
+        # if self.semantic_weight >= 0 and semantic_weight == None:
+        #     w = torch.ones(x.shape[0],1) * self.semantic_weight
+        #     w = torch.cat([w, 1-w], axis=-1)
+        #     semantic_weight = w.cuda()
+
+
+
+        #dense video feature
+        if video:
+            x = x.view(batchsize, seq_len, x.size(1), x.size(2), x.size(3))
+            if self.semantic_weight >= 0 and semantic_weight == None:
+                w = torch.ones(x.shape[0], 1) * self.semantic_weight
+                w = torch.cat([w, 1 - w], axis=-1)
+                semantic_weight = w.cuda()
+            x_list = []
+            total_hw_shape = None  # 初始化为None
+            for i in range(seq_len):
+                a, b = self.patch_embed(x[:, i])
+                x_list.append(a)
+                # 初次迭代，设置total_hw_shape
+                if total_hw_shape is None:
+                    total_hw_shape = list(b)
+                else:
+                    total_hw_shape[0] += b[0]  # 仅累加第一个维度的值
+            x_list = torch.cat(x_list, dim=1)
+            x = x_list
+            hw_shape = tuple(total_hw_shape)  # 更新hw_shape为累加值的tuple
+
+
+        else:
+            if self.semantic_weight >= 0 and semantic_weight == None:
+                w = torch.ones(x.shape[0], 1) * self.semantic_weight
+                w = torch.cat([w, 1 - w], axis=-1)
+                semantic_weight = w.cuda()
+            x, hw_shape = self.patch_embed(x)
+
+
 
         if self.use_abs_pos_embed:
             x = x + self.absolute_pos_embed
@@ -1430,7 +1464,7 @@ class SwinTransformer(BaseModule):
         x = self.avgpool(outs[-1]) # x就是 featue的最后一位的avgpool feature是64 1024 12 4
         x = torch.flatten(x, 1)
 
-        hunhe = True
+        hunhe = False
         ####随便混合一下
         if hunhe:
             featmap_last = outs[-1]
@@ -1648,18 +1682,18 @@ class SwinTransformerPose(BaseModule):
                 self.semantic_embed_b.append(semantic_embed_b)
             self.softplus = nn.Softplus()
 
-        # self.transreid = TransReID(
-        # img_size=[256, 128], patch_size=16, stride_size=[16, 16], embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,\
-        # camera=0,  drop_path_rate=0.1, drop_rate=0.0, attn_drop_rate=0.0,norm_layer=partial(nn.LayerNorm, eps=1e-6),  cam_lambda=3.0)
-        # state_dict_imagenet = torch.load('jx_vit_base_p16_224-80ecf9dd.pth', map_location='cpu')
-        # self.transreid.load_param(state_dict_imagenet, load=True)  # 给模型加载这些参数
+        self.transreid = TransReID(
+        img_size=[256, 128], patch_size=16, stride_size=[16, 16], embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,\
+        camera=0,  drop_path_rate=0.1, drop_rate=0.0, attn_drop_rate=0.0,norm_layer=partial(nn.LayerNorm, eps=1e-6),  cam_lambda=3.0)
+        state_dict_imagenet = torch.load('jx_vit_base_p16_224-80ecf9dd.pth', map_location='cpu')
+        self.transreid.load_param(state_dict_imagenet, load=True)  # 给模型加载这些参数
 
-        self.transreid = TransReIDZK(
-            img_size=[384, 128], sie_xishu= 3.0,stride_size=[16, 16],patch_size=16,embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
-            camera=0,view = 0, drop_path_rate=0.1, drop_rate=0.0, attn_drop_rate=0.0, gem_pool=False, stem_conv=False)
-
-        modelpass_path = 'pass_vit_base_full.pth'
-        self.transreid.load_param(modelpass_path, hw_ratio=2)
+        # self.transreid = TransReIDZK(
+        #     img_size=[384, 128], sie_xishu= 3.0,stride_size=[16, 16],patch_size=16,embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        #     camera=0,view = 0, drop_path_rate=0.1, drop_rate=0.0, attn_drop_rate=0.0, gem_pool=False, stem_conv=False)
+        #
+        # modelpass_path = 'pass_vit_base_full.pth'
+        # self.transreid.load_param(modelpass_path, hw_ratio=2)
 
 
         from ..make_model import weights_init_kaiming

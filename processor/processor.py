@@ -683,7 +683,7 @@ def do_mars_train(cfg,
     checkpoint_period = cfg.SOLVER.CHECKPOINT_PERIOD
     eval_period = cfg.SOLVER.EVAL_PERIOD
 
-    clusting_feature = False ##############混合的feature
+    clusting_feature = True ##############混合的feature
 
     device = "cuda"
     epochs = cfg.SOLVER.MAX_EPOCHS
@@ -882,7 +882,8 @@ def do_marspose_train(cfg,
 
                 loss1 = loss_fn(score, feat, target, target_cam) #实际没用上 target_cam，vid里面的loss也没用和这个
                 loss2 = loss_fn(score_vit, feat_vit, target, target_cam)
-                loss = loss1 + loss2
+                xishu = 0.1
+                loss = (1-xishu) * loss1 + xishu * loss2
             scaler.scale(loss).backward()
 
             scaler.step(optimizer)

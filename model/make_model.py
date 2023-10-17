@@ -10,6 +10,8 @@ import torch.nn.functional as F
 import numpy as np
 from sklearn.cluster import KMeans,MeanShift,estimate_bandwidth
 import random
+#import faiss
+from kmeans_pytorch import kmeans
 
 class SelfAttentionPooling(nn.Module):
     """
@@ -41,20 +43,161 @@ class SelfAttentionPooling(nn.Module):
         x = torch.sum(x * att_w, dim=1)
         return x
 
-def get_mask(features,clsnum):
+
+def cluster_tensor_on_gpu(tensor, n_clusters):
+    """
+    使用FAISS GPU版本对形状为(b, s, c, h, w)的张量进行聚类。
+
+    参数:
+    - tensor: 输入的形状为(b, s, c, h, w)的张量。
+    - n_clusters: 聚类的数量。
+
+    返回:
+    - centroids: 聚类的中心点。
+    - assignments: 每个特征向量的聚类分配。
+    """
+
+    # 确保张量在CPU上，并使用detach()来确保它不需要梯度
+    tensor = tensor.detach().cpu().numpy()
+
+    # 将张量重塑为(c*h*w)块作为特征向量
+    b, s, c, h, w = tensor.shape
+    tensor_reshaped = tensor.reshape(b * s, c * h * w)
+
+    # 初始化GPU资源
+    res = faiss.StandardGpuResources()
+
+    # 使用FAISS的GPU版本进行聚类
+    n_data, dim = tensor_reshaped.shape
+    flat_config = faiss.GpuIndexFlatConfig()
+    flat_config.device = 0  # 使用第一个GPU
+    kmeans = faiss.GpuIndexFlatL2(res, dim, flat_config)
+
+    kmeans = faiss.Kmeans(dim, n_clusters, niter=20, verbose=False, gpu=True)
+    kmeans.train(tensor_reshaped)
+    centroids = kmeans.centroids
+    _, assignments = kmeans.index.search(tensor_reshaped, 1)
+
+    return centroids, assignments
+# def get_mask(features,clsnum):
+#     n,c,h,w = features.shape
+#     masks = []
+#     mask_idxs = []
+#     for i in range(n):
+#         x = features[i].detach().cpu().numpy()
+#         x = x.transpose(1,2,0)
+#         x = x.reshape(-1,c)
+#
+#         # foreground/background cluster
+#         _x = np.linalg.norm(x,axis=1,keepdims=True) #计算每行的L2范数并保留维度, l2范数就是平方和开根号
+#         km = KMeans(n_clusters=2, n_init=10, random_state=0).fit(_x)
+#         bg_mask = km.labels_
+#         ctrs = km.cluster_centers_
+#         if ctrs[0][0] > ctrs[1][0]:
+#             bg_mask = 1 - bg_mask
+#         idx = np.where(bg_mask==1)[0]
+#         if len(idx) <= 0.5*w*h:
+#             continue
+#         mask_idxs.append(i)
+#
+#         # pixel cluster
+#         _x = x[idx]
+#         cluster = KMeans(n_clusters=clsnum, n_init=10, random_state=0).fit(_x)
+#         _res = cluster.labels_
+#         res = np.zeros(h*w)
+#         res[idx] = _res + 1
+#
+#         # align
+#         res = res.reshape(h,w)
+#         ys = []
+#         for k in range(1,clsnum+1):
+#             y = np.where(res==k)[0].mean()
+#             ys.append(y)
+#         ys = np.hstack(ys)
+#         y_idxs = np.argsort(ys) + 1
+#         heatmap = np.zeros_like(res)
+#         for k in range(1,clsnum+1):
+#             heatmap[res==y_idxs[k-1]] = k
+#         masks.append(heatmap)
+#     masks = np.stack(masks) if len(mask_idxs) > 0 else np.zeros(0)
+#     mask_idxs = np.hstack(mask_idxs) if len(mask_idxs) > 0 else np.zeros(0)
+#     return masks, mask_idxs
+
+
+import torch
+from kmeans_pytorch import kmeans
+
+
+def get_mask(features, clsnum):
+    device = features.device
+    n, c, h, w = features.shape
+    masks = []
+    mask_idxs = []
+
+    for i in range(n):
+        x = features[i]
+        #x = x.permute(1, 2, 0)
+        x = x.reshape(-1, c)
+
+        # foreground/background cluster
+        _x = torch.norm(x, p=2, dim=1, keepdim=True)
+
+        cluster_ids_x, cluster_centers = kmeans(X=_x, num_clusters=2, distance='euclidean', device=device)
+
+        if cluster_centers[0] > cluster_centers[1]:
+            cluster_ids_x = 1 - cluster_ids_x
+
+        bg_mask = (cluster_ids_x == 0).nonzero().squeeze().to(device)
+
+        if bg_mask.numel() <= 0.5 * w * h:
+            continue
+        mask_idxs.append(i)
+
+        # pixel cluster
+        _x = x[bg_mask]
+        cluster_ids_x, _ = kmeans(X=_x, num_clusters=clsnum, distance='euclidean', device=device)
+        _res = cluster_ids_x.to(device)
+        res = torch.zeros(h * w, dtype=torch.long, device=device)
+        res[bg_mask] = _res + 1
+
+        # align
+        res = res.reshape(h, w)
+        ys = []
+        for k in range(1, clsnum + 1):
+            y = (res == k).nonzero(as_tuple=True)[0].float().mean()
+            ys.append(y)
+        ys = torch.stack(ys)
+        y_idxs = torch.argsort(ys) + 1
+        heatmap = torch.zeros_like(res)
+        for k in range(1, clsnum + 1):
+            heatmap[res == y_idxs[k - 1]] = k
+        masks.append(heatmap)
+
+    masks = torch.stack(masks) if len(mask_idxs) > 0 else torch.zeros(0, device=device)
+    mask_idxs = torch.tensor(mask_idxs, device=device) if len(mask_idxs) > 0 else torch.zeros(0, device=device)
+
+    return masks, mask_idxs
+
+
+def get_mask_GPU(features,clsnum):
     n,c,h,w = features.shape
     masks = []
     mask_idxs = []
     for i in range(n):
-        x = features[i].detach().cpu().numpy()
-        x = x.transpose(1,2,0)
-        x = x.reshape(-1,c)
+        # x = features[i].detach().cpu().numpy()
+        # x = x.transpose(1,2,0)
+        # x = x.reshape(-1,c)
+        x = x.view(-1,c)
 
         # foreground/background cluster
-        _x = np.linalg.norm(x,axis=1,keepdims=True) #计算每行的L2范数并保留维度, l2范数就是平方和开根号
-        km = KMeans(n_clusters=2, n_init=10, random_state=0).fit(_x)
-        bg_mask = km.labels_
-        ctrs = km.cluster_centers_
+        #_x = np.linalg.norm(x,axis=1,keepdims=True) #计算每行的L2范数并保留维度, l2范数就是平方和开根号
+        _x = torch.norm(x,p=2,dim=1,keepdim=True)
+
+        km = kmeans(_x,2, distance='euclidean', device=torch.device('cuda:0'))
+
+        #km = KMeans(n_clusters=2, n_init=10, random_state=0).fit(_x)
+        bg_mask = km[0]
+        ctrs = km[-1]
         if ctrs[0][0] > ctrs[1][0]:
             bg_mask = 1 - bg_mask
         idx = np.where(bg_mask==1)[0]
@@ -64,8 +207,10 @@ def get_mask(features,clsnum):
 
         # pixel cluster
         _x = x[idx]
-        cluster = KMeans(n_clusters=clsnum, n_init=10, random_state=0).fit(_x)
-        _res = cluster.labels_
+        #cluster = KMeans(n_clusters=clsnum, n_init=10, random_state=0).fit(_x)
+        cluster = kmeans(_x, clsnum, distance='euclidean', device=torch.device('cuda:0'))
+
+        _res = cluster[0]
         res = np.zeros(h*w)
         res[idx] = _res + 1
 
@@ -85,6 +230,52 @@ def get_mask(features,clsnum):
     mask_idxs = np.hstack(mask_idxs) if len(mask_idxs) > 0 else np.zeros(0)
     return masks, mask_idxs
 
+
+def get_mask_v2(features, clsnum):
+    b, s, c, h, w = features.shape
+    all_masks = []
+    all_mask_idxs = []
+
+    for i in range(b):
+        for j in range(s):
+            x = features[i][j].detach().cpu().numpy()
+            x = x.transpose(1, 2, 0)
+            x = x.reshape(-1, c)
+
+            # foreground/background cluster
+            _x = np.linalg.norm(x, axis=1, keepdims=True)  # 计算每行的L2范数并保留维度
+            km = KMeans(n_clusters=2, n_init=10, random_state=0).fit(_x)
+            bg_mask = km.labels_
+            ctrs = km.cluster_centers_
+            if ctrs[0][0] > ctrs[1][0]:
+                bg_mask = 1 - bg_mask
+            idx = np.where(bg_mask == 1)[0]
+            if len(idx) <= 0.5 * w * h:
+                continue
+            all_mask_idxs.append((i, j))
+
+            # pixel cluster
+            _x = x[idx]
+            cluster = KMeans(n_clusters=clsnum, n_init=10, random_state=0).fit(_x)
+            _res = cluster.labels_
+            res = np.zeros(h * w)
+            res[idx] = _res + 1
+
+            # align
+            res = res.reshape(h, w)
+            ys = []
+            for k in range(1, clsnum + 1):
+                y = np.where(res == k)[0].mean()
+                ys.append(y)
+            ys = np.hstack(ys)
+            y_idxs = np.argsort(ys) + 1
+            heatmap = np.zeros_like(res)
+            for k in range(1, clsnum + 1):
+                heatmap[res == y_idxs[k - 1]] = k
+            all_masks.append(heatmap)
+
+    all_masks = np.stack(all_masks) if len(all_mask_idxs) > 0 else np.zeros((0, h, w))
+    return all_masks, all_mask_idxs
 
 def extract_tensor_based_on_values(aa, cc):
     """
@@ -470,7 +661,7 @@ class build_mars_transformer(nn.Module):
         #if pretrain_choice == 'self':
         #    self.load_param(model_path)
     # input : x tensor bs,3,h,w | label tensor bs  cam_label tensor bs, view_label tensor bs   . x是一个batch的 img label 是personid ， camlabel是camid viewlabel是viewid，在market1501中，camid是1-6，viewid是1-6，personid都是1
-    def forward(self, x, label=None, cam_label= None, view_label=None,clusting_feature=False):
+    def forward(self, x, label=None, cam_label= None, view_label=None,clusting_feature=True):
         model_jpm = False
         #clusting_feature = True
 
@@ -478,9 +669,12 @@ class build_mars_transformer(nn.Module):
         t=x.size(1) # seq 4
         x = x.view(b * t, x.size(2), x.size(3), x.size(4)) #[32,4,3,256,128] --> [128,3,256,128]
 
+        video = False
+        if video:
+            global_feat, featmaps = self.base(x,batchsize=b,seq_len=t,video=video) #如果是swin global 对应这 vid里的feat 也就是再来个 classifier就到score了
+        else:
 
-
-        global_feat, featmaps = self.base(x) #如果是swin global 对应这 vid里的feat 也就是再来个 classifier就到score了
+            global_feat, featmaps = self.base(x) #如果是swin global 对应这 vid里的feat 也就是再来个 classifier就到score了
 
         # ####随便混合一下
         # featmap_last = featmaps[-1]
@@ -493,7 +687,12 @@ class build_mars_transformer(nn.Module):
         # global_feat = featmap_last
 
 
-        global_feat = torch.mean(global_feat.view(-1, t, 1024), dim=1)
+        #featmap_last = featmaps[-1]
+        #featmap_last = featmap_last.view(b, t, featmap_last.size(1), featmap_last.size(2), featmap_last.size(3))
+        #aaa = cluster_tensor_on_gpu(featmap_last, 3)
+
+        if not video:
+            global_feat = torch.mean(global_feat.view(-1, t, 1024), dim=1)
 
         if clusting_feature:
             featmap_last = featmaps[-1]
@@ -503,11 +702,16 @@ class build_mars_transformer(nn.Module):
             part3_features = []
             for i in range(b):
                 featmap_single = featmap_last[i]
-                mask = get_mask(featmap_single, 3)
-                mask_index = torch.from_numpy(mask[-1]).to(featmap_last.device)
+                # mask = get_mask(featmap_single, 3)
+                # mask_index = torch.from_numpy(mask[-1]).to(featmap_last.device)
+                mask, mask_index = get_mask(featmap_single, 3)
+
+
+
                 if mask_index.numel() != 0:
                     featmap_single = featmap_single[mask_index]
-                    mask_tensor = torch.from_numpy(mask[0]).to(featmap_last.device)
+                    #mask_tensor = torch.from_numpy(mask[0]).to(featmap_last.device)
+                    mask_tensor = mask
                     part1_feature = extract_tensor_based_on_values(featmap_single, mask_tensor)[0]
                     part2_feature = extract_tensor_based_on_values(featmap_single, mask_tensor)[1]
                     part3_feature = extract_tensor_based_on_values(featmap_single, mask_tensor)[2]
