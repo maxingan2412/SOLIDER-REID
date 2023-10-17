@@ -683,7 +683,7 @@ def do_mars_train(cfg,
     checkpoint_period = cfg.SOLVER.CHECKPOINT_PERIOD
     eval_period = cfg.SOLVER.EVAL_PERIOD
 
-    clusting_feature = True ##############混合的feature
+    # clusting_feature = True ##############混合的feature
 
     device = "cuda"
     epochs = cfg.SOLVER.MAX_EPOCHS
@@ -723,6 +723,7 @@ def do_mars_train(cfg,
             labels2 = labels2.to(device)
             with amp.autocast(enabled=True):
                 target_cam = target_cam.view(-1)
+                clusting_feature = True  ##############混合的feature
 
                 score, feat, _ = model(img, label=target, cam_label=target_cam,clusting_feature=clusting_feature)
 
