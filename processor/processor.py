@@ -449,7 +449,7 @@ def search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, k1
 
 
 
-def test_mars(model, queryloader, galleryloader, pool='avg', use_gpu=True,epoch = 120):
+def test_mars(model, queryloader, galleryloader, pool='avg', use_gpu=True,epoch = 119):
     model.eval()
     #qf1980 13056 tensor  q_pids 1980  q_camids 110860 因为一个tracklets id一样，所以是1980，但是camerid不一定一样 所以每个tacklets下的每个图片的camid都得记录，是110860
     qf, q_pids, q_camids = extract_features(queryloader, model, use_gpu, pool)
@@ -484,7 +484,7 @@ def test_mars(model, queryloader, galleryloader, pool='avg', use_gpu=True,epoch 
         print(f"mAP: {mAP:.1%}")
         print(f"CMC curve r1: {cmc[0]}")
         #search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, num_processes=24)
-        if epoch >= 120:
+        if epoch >= 121:
             search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, (10, 31), (2, 11))
 
 
@@ -702,6 +702,10 @@ def do_mars_train(cfg,
 
     evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
     scaler = amp.GradScaler()
+    clusting_feature = False  ##############混合的feature
+    temporal_attention = False
+    print('clusting_feature',clusting_feature,'temporal_attention',temporal_attention)
+
     # train
     for epoch in range(1, epochs + 1):
         start_time = time.time()
@@ -711,7 +715,7 @@ def do_mars_train(cfg,
         model.train()
 
         # model.eval()
-        # cmc, map = test_mars(model, q_val_set, g_val_set)
+        # cmc, map = test_mars(model, q_val_set, g_val_set,epoch = epoch)
         # print('CMC: %.4f, mAP : %.4f' % (cmc, map))
         #
         for n_iter, (img, pid, target_cam, labels2) in enumerate(train_loader):
@@ -723,9 +727,13 @@ def do_mars_train(cfg,
             labels2 = labels2.to(device)
             with amp.autocast(enabled=True):
                 target_cam = target_cam.view(-1)
-                clusting_feature = True  ##############混合的feature
-
-                score, feat, _ = model(img, label=target, cam_label=target_cam,clusting_feature=clusting_feature)
+                # clusting_feature = False  ##############混合的feature
+                # temporal_attention = True
+                if not temporal_attention:
+                    score, feat, _ = model(img, label=target, cam_label=target_cam,clusting_feature=clusting_feature,temporal_attention = temporal_attention)
+                else:
+                    score, feat, _,a_val = model(img, label=target, cam_label=target_cam, clusting_feature=clusting_feature,
+                                           temporal_attention=temporal_attention)
 
                 #为了适应 swin的形状 给 target变成4倍
                 #target = torch.repeat_interleave(target, repeats=4)
@@ -737,8 +745,14 @@ def do_mars_train(cfg,
                     loss3 = loss_fn(score[3], feat[3], target, target_cam)
                     loss = loss + (loss1 + loss2 + loss3) / 3
                 else:
-
-                    loss = loss_fn(score, feat, target, target_cam) #实际没用上 target_cam，vid里面的loss也没用和这个
+                    if not temporal_attention:
+                        loss = loss_fn(score, feat, target, target_cam) #实际没用上 target_cam，vid里面的loss也没用和这个
+                    else:
+                        loss1 = loss_fn(score, feat, target, target_cam)
+                        labels2 = labels2.to(device)
+                        attention_noise = a_val * labels2
+                        attention_loss = attention_noise.sum(1).mean()
+                        loss = loss1 + attention_loss
 
             scaler.scale(loss).backward()
 
@@ -785,7 +799,7 @@ def do_mars_train(cfg,
 
         if epoch % eval_period == 0:
             model.eval()
-            cmc, map = test_mars(model, q_val_set, g_val_set,epoch)
+            cmc, map = test_mars(model, q_val_set, g_val_set,epoch = epoch)
             print('CMC: %.4f, mAP : %.4f' % (cmc, map))
 
             if epoch % checkpoint_period == 0:
@@ -832,6 +846,7 @@ def do_marspose_train(cfg,
     log_period = cfg.SOLVER.LOG_PERIOD
     checkpoint_period = cfg.SOLVER.CHECKPOINT_PERIOD
     eval_period = cfg.SOLVER.EVAL_PERIOD
+    xishu = cfg.SOLVER.XISHU
 
     device = "cuda"
     epochs = cfg.SOLVER.MAX_EPOCHS
@@ -850,6 +865,8 @@ def do_marspose_train(cfg,
 
     evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
     scaler = amp.GradScaler()
+    #xishu = 0.1
+    print('xishu', xishu)
     # train
     for epoch in range(1, epochs + 1):
         start_time = time.time()
@@ -883,7 +900,7 @@ def do_marspose_train(cfg,
 
                 loss1 = loss_fn(score, feat, target, target_cam) #实际没用上 target_cam，vid里面的loss也没用和这个
                 loss2 = loss_fn(score_vit, feat_vit, target, target_cam)
-                xishu = 0.1
+
                 loss = (1-xishu) * loss1 + xishu * loss2
             scaler.scale(loss).backward()
 
@@ -928,77 +945,58 @@ def do_marspose_train(cfg,
             logger.info("Epoch {} done. Time per epoch: {:.3f}[s] Speed: {:.1f}[samples/s]"
                     .format(epoch, time_per_batch * (n_iter + 1), train_loader.batch_size / time_per_batch))
 
-        if epoch % checkpoint_period == 0:
-            # Ensure directory exists; if not, create it
-            if not os.path.exists(cfg.OUTPUT_DIR):
-                os.makedirs(cfg.OUTPUT_DIR)
-
-            if cfg.MODEL.DIST_TRAIN:
-                if dist.get_rank() == 0:
-                    torch.save(model.state_dict(),
-                               os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
-            else:
-                # 获取当前时间并格式化为字符串
-                current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-                model_path = os.path.join(cfg.OUTPUT_DIR,
-                                          "{}{}_{}_{}_{}.pth".format(cfg.MODEL.NAME, cfg.DATASETS.NAMES,
-                                                                     cfg.SOLVER.IMS_PER_BATCH, current_time, epoch))
-
-                # 打印保存模型的路径信息
-                print(f"Saving model to: {model_path}")
-
-                torch.save(model.state_dict(), model_path)
+        # if epoch % checkpoint_period == 0:
+        #     # Ensure directory exists; if not, create it
+        #     if not os.path.exists(cfg.OUTPUT_DIR):
+        #         os.makedirs(cfg.OUTPUT_DIR)
+        #
+        #     if cfg.MODEL.DIST_TRAIN:
+        #         if dist.get_rank() == 0:
+        #             torch.save(model.state_dict(),
+        #                        os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
+        #     else:
+        #         # 获取当前时间并格式化为字符串
+        #         # 获取当前时间并格式化为字符串
+        #         current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+        #
+        #         # 将cmc和map的值添加到模型名字中
+        #         model_name = "{}{}_{}_{}_{}_CMC_{:.4f}_mAP_{:.4f}.pth".format(cfg.MODEL.NAME, cfg.DATASETS.NAMES,
+        #                                                                       cfg.SOLVER.IMS_PER_BATCH,
+        #                                                                       current_time, epoch, cmc, map)
+        #
+        #         # 构建模型保存路径
+        #         model_path = os.path.join(cfg.OUTPUT_DIR, model_name)
 
         if epoch % eval_period == 0:
-            # if cfg.MODEL.DIST_TRAIN:
-            #     if dist.get_rank() == 0:
-            #         model.eval()
-            #         for n_iter, (img, vid, camid, camids, target_view, _) in enumerate(tqdm(val_loader)):
-            #             with torch.no_grad():
-            #                 img = img.to(device)
-            #                 camids = camids.to(device)
-            #                 target_view = target_view.to(device)
-            #                 feat, _ = model(img, cam_label=camids, view_label=target_view)
-            #                 evaluator.update((feat, vid, camid))
-            #         cmc, mAP, _, _, _, _, _ = evaluator.compute()
-            #         logger.info("Validation Results - Epoch: {}".format(epoch))
-            #         logger.info("mAP: {:.1%}".format(mAP))
-            #         for r in [1, 5, 10]:
-            #             logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
-            #         torch.cuda.empty_cache()
-            # else:
-                # model.eval()
-                # for n_iter, (img, vid, camid, camids, target_view, _) in enumerate(tqdm(val_loader)):
-                #     with torch.no_grad():
-                #         img = img.to(device)
-                #         camids = camids.to(device)
-                #         target_view = target_view.to(device)
-                #         feat, _ = model(img, cam_label=camids, view_label=target_view)
-                #         evaluator.update((feat, vid, camid))
-                # cmc, mAP, _, _, _, _, _ = evaluator.compute()
-                # logger.info("Validation Results - Epoch: {}".format(epoch))
-                # logger.info("mAP: {:.1%}".format(mAP))
-                # for r in [1, 5, 10]:
-                #     logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
-                # torch.cuda.empty_cache()
-
             model.eval()
-            cmc, map = test_mars(model, q_val_set, g_val_set,epoch)
+            cmc, map = test_mars(model, q_val_set, g_val_set,epoch = epoch)
             print('CMC: %.4f, mAP : %.4f' % (cmc, map))
-                # if cmc_rank1 < cmc:
-                #    cmc_rank1=cmc
+            if epoch % checkpoint_period == 0:
+                # Ensure directory exists; if not, create it
+                if not os.path.exists(cfg.OUTPUT_DIR):
+                    os.makedirs(cfg.OUTPUT_DIR)
 
-                # save_path = 'VID-Trans-ReID_pth'
-                # current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                #
-                # file_name = f"{cfg.DATASETS.NAMES}_BS{cfg.SOLVER.IMS_PER_BATCH}_Epoch{epoch}_CMC{cmc:.4f}_MAP{map:.4f}_{current_time}.pth"
-                # save_filename = os.path.join(save_path, file_name)
-                #
-                # # 创建目录，如果它不存在
-                # if not os.path.exists(save_path):
-                #     os.makedirs(save_path)
-                # torch.save(model.state_dict(), save_filename)
+                if cfg.MODEL.DIST_TRAIN:
+                    if dist.get_rank() == 0:
+                        torch.save(model.state_dict(),
+                                   os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
+                else:
+                    # 获取当前时间并格式化为字符串
+                    current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+                    # 将cmc和map的值添加到模型名字中
+                    model_name = "{}{}_{}_{}_{}_CMC_{:.4f}_mAP_{:.4f}.pth".format(cfg.MODEL.NAME, cfg.DATASETS.NAMES,
+                                                                                  cfg.SOLVER.IMS_PER_BATCH,
+                                                                                  current_time, epoch, cmc, map)
+
+                    # 构建模型保存路径
+                    model_path = os.path.join(cfg.OUTPUT_DIR, model_name)
+
+                    # 打印保存模型的路径信息
+                    print(f"Saving model to: {model_path}")
+
+                    # 保存模型
+                    torch.save(model.state_dict(), model_path)
 
 
 

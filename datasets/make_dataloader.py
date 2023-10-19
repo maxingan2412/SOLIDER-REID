@@ -241,7 +241,7 @@ def make_mars_dataloader(cfg):
         T.RandomCrop(cfg.INPUT.SIZE_TRAIN),
         T.ToTensor(),
         T.Normalize(mean=cfg.INPUT.PIXEL_MEAN, std=cfg.INPUT.PIXEL_STD),
-
+        #如果采用temporal 就注释这个，从video_inderase中写easing
         RandomErasing(probability=cfg.INPUT.RE_PROB, mode='pixel', max_count=1, device='cpu'),
     ])
     # 义了一个数据增强的转换序列 train_transforms，用于在训练数据上进行预处理操作。这些操作有助于提高模型的泛化能力和性能，同时也可以增加数据的多样性。

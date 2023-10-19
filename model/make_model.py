@@ -44,41 +44,41 @@ class SelfAttentionPooling(nn.Module):
         return x
 
 
-def cluster_tensor_on_gpu(tensor, n_clusters):
-    """
-    使用FAISS GPU版本对形状为(b, s, c, h, w)的张量进行聚类。
+# def cluster_tensor_on_gpu(tensor, n_clusters):
+#     """
+#     使用FAISS GPU版本对形状为(b, s, c, h, w)的张量进行聚类。
+#
+#     参数:
+#     - tensor: 输入的形状为(b, s, c, h, w)的张量。
+#     - n_clusters: 聚类的数量。
+#
+#     返回:
+#     - centroids: 聚类的中心点。
+#     - assignments: 每个特征向量的聚类分配。
+#     """
+#
+#     # 确保张量在CPU上，并使用detach()来确保它不需要梯度
+#     tensor = tensor.detach().cpu().numpy()
+#
+#     # 将张量重塑为(c*h*w)块作为特征向量
+#     b, s, c, h, w = tensor.shape
+#     tensor_reshaped = tensor.reshape(b * s, c * h * w)
+#
+#     # 初始化GPU资源
+#     res = faiss.StandardGpuResources()
+#
+#     # 使用FAISS的GPU版本进行聚类
+#     n_data, dim = tensor_reshaped.shape
+#     flat_config = faiss.GpuIndexFlatConfig()
+#     flat_config.device = 0  # 使用第一个GPU
+#     kmeans = faiss.GpuIndexFlatL2(res, dim, flat_config)
+#
+#     kmeans = faiss.Kmeans(dim, n_clusters, niter=20, verbose=False, gpu=True)
+#     kmeans.train(tensor_reshaped)
+#     centroids = kmeans.centroids
+#     _, assignments = kmeans.index.search(tensor_reshaped, 1)
 
-    参数:
-    - tensor: 输入的形状为(b, s, c, h, w)的张量。
-    - n_clusters: 聚类的数量。
-
-    返回:
-    - centroids: 聚类的中心点。
-    - assignments: 每个特征向量的聚类分配。
-    """
-
-    # 确保张量在CPU上，并使用detach()来确保它不需要梯度
-    tensor = tensor.detach().cpu().numpy()
-
-    # 将张量重塑为(c*h*w)块作为特征向量
-    b, s, c, h, w = tensor.shape
-    tensor_reshaped = tensor.reshape(b * s, c * h * w)
-
-    # 初始化GPU资源
-    res = faiss.StandardGpuResources()
-
-    # 使用FAISS的GPU版本进行聚类
-    n_data, dim = tensor_reshaped.shape
-    flat_config = faiss.GpuIndexFlatConfig()
-    flat_config.device = 0  # 使用第一个GPU
-    kmeans = faiss.GpuIndexFlatL2(res, dim, flat_config)
-
-    kmeans = faiss.Kmeans(dim, n_clusters, niter=20, verbose=False, gpu=True)
-    kmeans.train(tensor_reshaped)
-    centroids = kmeans.centroids
-    _, assignments = kmeans.index.search(tensor_reshaped, 1)
-
-    return centroids, assignments
+    # return centroids, assignments
 # def get_mask(features,clsnum):
 #     n,c,h,w = features.shape
 #     masks = []
@@ -654,6 +654,13 @@ class build_mars_transformer(nn.Module):
 
         self.attention_pooling = SelfAttentionPooling(self.in_planes)
 
+        # -------------------video attention-------------
+        self.middle_dim = 256  # middle layer dimension
+        self.attention_conv = nn.Conv2d(self.in_planes, self.middle_dim, [1, 1])  # 7,4 cooresponds to 224, 112 input image size  Conv2d(768, 256, kernel_size=[1, 1], stride=(1, 1))
+        self.attention_tconv = nn.Conv1d(self.middle_dim, 1, 3, padding=1)
+        self.attention_conv.apply(weights_init_kaiming)
+        self.attention_tconv.apply(weights_init_kaiming)
+
 
         ###加入  a_val
 
@@ -661,7 +668,7 @@ class build_mars_transformer(nn.Module):
         #if pretrain_choice == 'self':
         #    self.load_param(model_path)
     # input : x tensor bs,3,h,w | label tensor bs  cam_label tensor bs, view_label tensor bs   . x是一个batch的 img label 是personid ， camlabel是camid viewlabel是viewid，在market1501中，camid是1-6，viewid是1-6，personid都是1
-    def forward(self, x, label=None, cam_label= None, view_label=None,clusting_feature=True):
+    def forward(self, x, label=None, cam_label= None, view_label=None,clusting_feature=True,temporal_attention=False):
         model_jpm = False
         #clusting_feature = True
 
@@ -692,7 +699,26 @@ class build_mars_transformer(nn.Module):
         #aaa = cluster_tensor_on_gpu(featmap_last, 3)
 
         if not video:
-            global_feat = torch.mean(global_feat.view(-1, t, 1024), dim=1)
+            #temporal attention
+            if temporal_attention:
+                global_feat = global_feat.unsqueeze(dim=2)
+                global_feat = global_feat.unsqueeze(dim=3)
+                a = F.relu(self.attention_conv(global_feat))
+                a = a.view(b,t, self.middle_dim)
+                a = a.permute(0,2,1)
+                a = F.relu(self.attention_tconv(a))
+                a = a.view(b,-1)
+                a_val = a
+                a = F.softmax(a, dim=1)
+                x = global_feat.view(b,t,-1)
+                a = torch.unsqueeze(a,-1)
+                a = a.expand(b,t,self.in_planes)
+                att_x = torch.mul(x,a)
+                att_x = torch.sum(att_x, dim=1)
+                global_feat = att_x.view(b,-1)
+
+            else:
+                global_feat = torch.mean(global_feat.view(-1, t, 1024), dim=1)
 
         if clusting_feature:
             featmap_last = featmaps[-1]
@@ -768,8 +794,12 @@ class build_mars_transformer(nn.Module):
                         cls_score_part3 = self.classifier(part3_feat_cls)
                         return [cls_score,cls_score_part1,cls_score_part2,cls_score_part3], [global_feat,part1_features,part2_features,part3_features], featmaps
                     else:
-                        cls_score = self.classifier(feat_cls)
-                        return cls_score, global_feat, featmaps
+                        if not temporal_attention:
+                            cls_score = self.classifier(feat_cls)
+                            return cls_score, global_feat, featmaps
+                        else:
+                            cls_score = self.classifier(feat_cls)
+                            return cls_score, global_feat, featmaps, a_val
 
                 # output cls_score tensor bs pid_num(625) , global_feat bs 1024, featmaps list 4 features 128 96 32 ,  256 48 16, 512 24 8, 1024 12 4
                 #return cls_score, global_feat, featmaps  # global feature for triplet loss,输出位
@@ -1334,7 +1364,7 @@ def make_model(cfg, num_class, camera_num, view_num, semantic_weight):
 
         elif cfg.DATASETS.NAMES == 'marspose':
             model = build_marspose_transformer(num_class, camera_num, view_num, cfg, __factory_T_type, semantic_weight)
-            print('===========building mars transformer===========')
+            print('===========building marspose transformer===========')
         else:
             if cfg.MODEL.JPM:
                 model = build_transformer_local(num_class, camera_num, view_num, cfg, __factory_T_type,
