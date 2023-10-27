@@ -20,19 +20,26 @@ mkdir -p "$LOG_FOLDER"
 CURRENT_TIME=$(date "+%Y-%m-%d_%H-%M-%S")
 LOG_FILE="./${LOG_FOLDER}/${LOG_NAME}_${CURRENT_TIME}.txt"
 
+# 获取 SOLVER.IMS_PER_BATCH 的值
+IMS_PER_BATCH=32
+
+# 计算 SOLVER.BASE_LR 的值
+BASE_LR=$(echo "scale=10; 0.0002 * ($IMS_PER_BATCH / 16)" | bc)
+
 # 使用nohup在后台执行训练命令，并将所有输出（包括错误输出）重定向到日志文件, 注意swin中的device_id必须在yml设置。
+# 执行您的 python 命令
 nohup python train.py \
 --config_file configs/mars/swin_base.yml \
 MODEL.PRETRAIN_CHOICE 'self' \
 MODEL.PRETRAIN_PATH 'pretrained_model/checkpoint_tea.pth' \
 OUTPUT_DIR './log/mars/swin_base' \
-SOLVER.BASE_LR 0.0008 \
+SOLVER.BASE_LR $BASE_LR \
 SOLVER.OPTIMIZER_NAME 'SGD' \
-SOLVER.MAX_EPOCHS 120 \
-SOLVER.CHECKPOINT_PERIOD 120 \
+SOLVER.MAX_EPOCHS 122 \
+SOLVER.CHECKPOINT_PERIOD 121 \
 SOLVER.EVAL_PERIOD 30 \
 MODEL.SEMANTIC_WEIGHT 0.2 \
-SOLVER.IMS_PER_BATCH 64 \
+SOLVER.IMS_PER_BATCH $IMS_PER_BATCH \
 DATALOADER.NUM_WORKERS 24 \
 INPUT.SIZE_TRAIN "[384, 128]" \
 INPUT.SIZE_TEST "[384, 128]" \

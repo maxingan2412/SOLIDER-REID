@@ -128,6 +128,12 @@ import torch
 from kmeans_pytorch import kmeans
 
 
+def get_instance_feature_or_global(instance_features, idx, global_feature):
+    if idx < len(instance_features):
+        return torch.mean(instance_features[idx], dim=1)
+    else:
+        return global_feature
+
 def get_mask(features, clsnum):
     device = features.device
     n, c, h, w = features.shape
@@ -277,7 +283,8 @@ def get_mask_v2(features, clsnum):
     all_masks = np.stack(all_masks) if len(all_mask_idxs) > 0 else np.zeros((0, h, w))
     return all_masks, all_mask_idxs
 
-def extract_tensor_based_on_values(aa, cc):
+#这是原来的clustering
+def extract_tensor_based_on_values1(aa, cc):
     """
     根据给定的值从张量aa中提取相应的部分。
 
@@ -305,6 +312,68 @@ def extract_tensor_based_on_values(aa, cc):
     result3 = extract_value(3, aa, cc)
 
     return result1, result2, result3
+
+
+def extract_tensor_based_on_values(aa, cc):
+    """
+    根据给定的值从张量aa中提取相应的部分。
+
+    参数:
+        aa (torch.Tensor): 输入张量，形状为 [seq, 1024, 12, 4]
+        cc (torch.Tensor): mask张量，形状为 [seq, 12, 4]
+
+    返回:
+        three lists: 对应于cc中值1、2、3的提取结果列表，每个列表都含有seq个元素，每个元素都是一个形状为 [1024, n1] 的张量
+    """
+
+    def extract_value(value, aa, cc):
+        results = []
+        for aa_batch, cc_batch in zip(aa, cc):
+            indices = torch.where(cc_batch == value)
+            if indices[0].numel() == 0:
+                results.append(torch.empty((1024, 0)))
+            else:
+                # 获取符合条件的张量切片
+                masked_data = aa_batch[:, indices[0], indices[1]]
+                results.append(masked_data.reshape(1024, -1))
+        return results
+
+    def random_mix(list1, list2, list3):
+        # 为每个部位生成随机索引
+        indices1 = list(range(len(list1)))
+        indices2 = list(range(len(list2)))
+        indices3 = list(range(len(list3)))
+
+        random.shuffle(indices1)
+        random.shuffle(indices2)
+        random.shuffle(indices3)
+
+        # 根据随机索引进行混合
+        mixed_people = []
+        for i in range(len(list1)):
+            tensor1 = list1[indices1[i]]
+            tensor2 = list2[indices2[i]]
+            tensor3 = list3[indices3[i]]
+            mixed_tensor = torch.cat([tensor1, tensor2, tensor3], dim=1)
+            mixed_people.append(mixed_tensor)
+
+        return mixed_people
+
+    result1 = extract_value(1, aa, cc)
+    result2 = extract_value(2, aa, cc)
+    result3 = extract_value(3, aa, cc)
+
+    mixed_people = random_mix(result1, result2, result3)
+    #linshi
+    # result1 = torch.cat(result1,dim=1)
+    # result2 = torch.cat(result2,dim=1)
+    # result3 = torch.cat(result3,dim=1)
+
+
+
+
+    return mixed_people
+
 
 
 def swap_patches(tensor, num_patches=2):
@@ -668,9 +737,9 @@ class build_mars_transformer(nn.Module):
         #if pretrain_choice == 'self':
         #    self.load_param(model_path)
     # input : x tensor bs,3,h,w | label tensor bs  cam_label tensor bs, view_label tensor bs   . x是一个batch的 img label 是personid ， camlabel是camid viewlabel是viewid，在market1501中，camid是1-6，viewid是1-6，personid都是1
-    def forward(self, x, label=None, cam_label= None, view_label=None,clusting_feature=True,temporal_attention=False):
+    def forward(self, x, label=None, cam_label= None, view_label=None,clusting_feature=0,temporal_attention=False):
         model_jpm = False
-        #clusting_feature = True
+
 
         b=x.size(0) # batch size 32
         t=x.size(1) # seq 4
@@ -720,7 +789,9 @@ class build_mars_transformer(nn.Module):
             else:
                 global_feat = torch.mean(global_feat.view(-1, t, 1024), dim=1)
 
-        if clusting_feature:
+
+
+        if clusting_feature == 1 and self.training :
             featmap_last = featmaps[-1]
             featmap_last = featmap_last.view(b,t,featmap_last.size(1),featmap_last.size(2),featmap_last.size(3))
             part1_features = []
@@ -732,15 +803,14 @@ class build_mars_transformer(nn.Module):
                 # mask_index = torch.from_numpy(mask[-1]).to(featmap_last.device)
                 mask, mask_index = get_mask(featmap_single, 3)
 
-
-
                 if mask_index.numel() != 0:
                     featmap_single = featmap_single[mask_index]
                     #mask_tensor = torch.from_numpy(mask[0]).to(featmap_last.device)
                     mask_tensor = mask
-                    part1_feature = extract_tensor_based_on_values(featmap_single, mask_tensor)[0]
-                    part2_feature = extract_tensor_based_on_values(featmap_single, mask_tensor)[1]
-                    part3_feature = extract_tensor_based_on_values(featmap_single, mask_tensor)[2]
+                    part_features = extract_tensor_based_on_values1(featmap_single, mask_tensor)
+                    part1_feature = part_features[0]
+                    part2_feature = part_features[1]
+                    part3_feature = part_features[2]
 
                     part1_feature = torch.mean(part1_feature,dim=1)
                     part2_feature = torch.mean(part2_feature,dim=1)
@@ -759,6 +829,55 @@ class build_mars_transformer(nn.Module):
             part1_features = torch.stack(part1_features)
             part2_features = torch.stack(part2_features)
             part3_features = torch.stack(part3_features)
+        elif clusting_feature == 2 and self.training:
+            featmap_last = featmaps[-1]
+            featmap_last = featmap_last.view(b, t, featmap_last.size(1), featmap_last.size(2), featmap_last.size(3))
+            I1_features = []
+            I2_features = []
+            I3_features = []
+            I4_features = []
+            for i in range(b):
+                featmap_single = featmap_last[i]
+
+                mask, mask_index = get_mask(featmap_single, 3)
+
+                #mask_index = torch.arange(0,featmap_single.shape[0],device=featmap_single.device)
+                #mask = torch.randint(0, 4, (featmap_single.shape[0], featmap_single.shape[2], featmap_single.shape[3]),device=featmap_single.device)
+
+
+                if mask_index.numel() != 0:
+                    featmap_single = featmap_single[mask_index]
+                    # mask_tensor = torch.from_numpy(mask[0]).to(featmap_last.device)
+                    mask_tensor = mask
+                    Instance_features = extract_tensor_based_on_values(featmap_single, mask_tensor)
+
+
+                    I1_feature = get_instance_feature_or_global(Instance_features, 0, global_feat[i])
+                    I2_feature = get_instance_feature_or_global(Instance_features, 1, global_feat[i])
+                    I3_feature = get_instance_feature_or_global(Instance_features, 2, global_feat[i])
+                    I4_feature = get_instance_feature_or_global(Instance_features, 3, global_feat[i])
+
+                    # I1_feature = torch.mean(I1_feature, dim=1)
+                    # I2_feature = torch.mean(I2_feature, dim=1)
+                    # I3_feature = torch.mean(I3_feature, dim=1)
+                    # I4_feature = torch.mean(I4_feature, dim=1)
+                else:
+                    I1_feature = global_feat[i]
+                    I2_feature = global_feat[i]
+                    I3_feature = global_feat[i]
+                    I4_feature = global_feat[i]
+
+
+                I1_features.append(I1_feature)
+                I2_features.append(I2_feature)
+                I3_features.append(I3_feature)
+                I4_features.append(I4_feature)
+
+            I1_features = torch.stack(I1_features)
+            I2_features = torch.stack(I2_features)
+            I3_features = torch.stack(I3_features)
+            I4_features = torch.stack(I4_features)
+
 
 
 
@@ -775,24 +894,40 @@ class build_mars_transformer(nn.Module):
                 global_feat = self.fcneck(global_feat)
             feat = self.bottleneck(global_feat)
             feat_cls = self.dropout(feat)
-            if clusting_feature:
+            if clusting_feature == 1 and self.training:
                 part1_feat = self.bottleneck(part1_features)
                 part2_feat = self.bottleneck(part2_features)
                 part3_feat = self.bottleneck(part3_features)
                 part1_feat_cls = self.dropout(part1_feat)
                 part2_feat_cls = self.dropout(part2_feat)
                 part3_feat_cls = self.dropout(part3_feat)
+            elif clusting_feature == 2 and self.training:
+                I1_feat = self.bottleneck(I1_features)
+                I2_feat = self.bottleneck(I2_features)
+                I3_feat = self.bottleneck(I3_features)
+                I4_feat = self.bottleneck(I4_features)
+                I1_feat_cls = self.dropout(I1_feat)
+                I2_feat_cls = self.dropout(I2_feat)
+                I3_feat_cls = self.dropout(I3_feat)
+                I4_feat_cls = self.dropout(I4_feat)
 
             if self.training:
                 if self.ID_LOSS_TYPE in ('arcface', 'cosface', 'amsoftmax', 'circle'):
                     cls_score = self.classifier(feat_cls, label)
                 else:
-                    if clusting_feature:
+                    if clusting_feature == 1:
                         cls_score = self.classifier(feat_cls)
                         cls_score_part1 = self.classifier(part1_feat_cls)
                         cls_score_part2 = self.classifier(part2_feat_cls)
                         cls_score_part3 = self.classifier(part3_feat_cls)
                         return [cls_score,cls_score_part1,cls_score_part2,cls_score_part3], [global_feat,part1_features,part2_features,part3_features], featmaps
+                    elif clusting_feature == 2:
+                        cls_score = self.classifier(feat_cls)
+                        cls_score_I1 = self.classifier(I1_feat_cls)
+                        cls_score_I2 = self.classifier(I2_feat_cls)
+                        cls_score_I3 = self.classifier(I3_feat_cls)
+                        cls_score_I4 = self.classifier(I4_feat_cls)
+                        return [cls_score, cls_score_I1, cls_score_I2, cls_score_I3, cls_score_I4], [global_feat, I1_features, I2_features, I3_features, I4_features], featmaps
                     else:
                         if not temporal_attention:
                             cls_score = self.classifier(feat_cls)
@@ -809,12 +944,12 @@ class build_mars_transformer(nn.Module):
                     return feat, featmaps
                 else:
                     #print("Test with feature before BN")
-                    if clusting_feature:
-                        return global_feat + (part1_features + part2_features + part3_features) / 3 , featmaps
-                    else:
-                        return global_feat, featmaps
+                    # if clusting_feature:
+                    #     return global_feat + (part1_features + part2_features + part3_features) / 3 , featmaps
+                    # else:
+                    #     return global_feat, featmaps
 
-                    #return global_feat, featmaps #输出位
+                    return global_feat, featmaps #输出位
         # else:
 
 

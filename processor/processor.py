@@ -367,10 +367,12 @@ def evaluate(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=21):
 def extract_features(data_loader, model, use_gpu=True, pool='avg'):
     features_list, pids_list, camids_list = [], [], []
     count = 0
-    max_batches = 999999
+    max_batches = 100
+
+
 
     with (torch.no_grad()):
-        for batch_idx, data in enumerate(data_loader):
+        for batch_idx, data in enumerate(tqdm(data_loader)):
             # data = data[0]
             # imgs, pids, camids,_ = data
             # if batch_idx > 100:
@@ -449,9 +451,14 @@ def search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, k1
 
 
 
-def test_mars(model, queryloader, galleryloader, pool='avg', use_gpu=True,epoch = 119):
+def test_mars(model, queryloader, galleryloader, pool='avg', use_gpu=True,epoch = 119,test_mode = False):
     model.eval()
     #qf1980 13056 tensor  q_pids 1980  q_camids 110860 因为一个tracklets id一样，所以是1980，但是camerid不一定一样 所以每个tacklets下的每个图片的camid都得记录，是110860
+
+    if test_mode:
+        model.load_param('log/mars/swin_base/transformermars_24_20231027_125126_120_CMC_0.9638_mAP_0.9178.pth')
+
+
     qf, q_pids, q_camids = extract_features(queryloader, model, use_gpu, pool)
     print(f"Extracted features for query set, obtained {qf.size(0)}-by-{qf.size(1)} matrix")
 
@@ -484,7 +491,7 @@ def test_mars(model, queryloader, galleryloader, pool='avg', use_gpu=True,epoch 
         print(f"mAP: {mAP:.1%}")
         print(f"CMC curve r1: {cmc[0]}")
         #search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, num_processes=24)
-        if epoch >= 121:
+        if epoch >= 120:
             search_best_rerank_parameters(qf, gf, q_pids, g_pids, q_camids, g_camids, (10, 31), (2, 11))
 
 
@@ -702,7 +709,7 @@ def do_mars_train(cfg,
 
     evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
     scaler = amp.GradScaler()
-    clusting_feature = False  ##############混合的feature
+    clusting_feature = 2  ##############混合的feature
     temporal_attention = False
     print('clusting_feature',clusting_feature,'temporal_attention',temporal_attention)
 
@@ -714,8 +721,10 @@ def do_mars_train(cfg,
         evaluator.reset()
         model.train()
 
-        # model.eval()
-        # cmc, map = test_mars(model, q_val_set, g_val_set,epoch = epoch)
+        #在这里测试
+
+        #model.eval()
+        #cmc, map = test_mars(model, q_val_set, g_val_set,epoch = epoch,test_mode = True)
         # print('CMC: %.4f, mAP : %.4f' % (cmc, map))
         #
         for n_iter, (img, pid, target_cam, labels2) in enumerate(train_loader):
@@ -738,12 +747,20 @@ def do_mars_train(cfg,
                 #为了适应 swin的形状 给 target变成4倍
                 #target = torch.repeat_interleave(target, repeats=4)
                 #target = target.repeat(4)
-                if clusting_feature:
+                if clusting_feature == 1:
                     loss = loss_fn(score[0], feat[0], target, target_cam)
                     loss1 = loss_fn(score[1], feat[1], target, target_cam)
                     loss2 = loss_fn(score[2], feat[2], target, target_cam)
                     loss3 = loss_fn(score[3], feat[3], target, target_cam)
                     loss = loss + (loss1 + loss2 + loss3) / 3
+                elif clusting_feature == 2:
+                    loss = loss_fn(score[0], feat[0], target, target_cam)
+                    loss1 = loss_fn(score[1], feat[1], target, target_cam)
+                    loss2 = loss_fn(score[2], feat[2], target, target_cam)
+                    loss3 = loss_fn(score[3], feat[3], target, target_cam)
+                    loss4 = loss_fn(score[4], feat[4], target, target_cam)
+                    # loss = loss + (loss1 + loss2 + loss3 + loss4) / 4
+                    loss = loss + loss1 + loss2 + loss3 + loss4
                 else:
                     if not temporal_attention:
                         loss = loss_fn(score, feat, target, target_cam) #实际没用上 target_cam，vid里面的loss也没用和这个

@@ -4,8 +4,37 @@ from collections import defaultdict
 from scipy.io import loadmat
 import os.path as osp
 import numpy as np
+import os
+import shutil
 
 
+def copy_images_to_folders(base_output_dir, data_list_name, data_list):
+    """
+    根据给定的数据列表，复制图片到指定的文件夹。
+
+    :param base_output_dir: 基本输出目录，用于保存创建的文件夹。
+    :param data_list_name: 数据列表的名称，例如 "train" 或 "test"。
+    :param data_list: 包含图片路径、pid和其他信息的元组列表。
+    """
+
+    # 在基目录下创建与数据列表名称相同的子目录
+    sub_directory = os.path.join(base_output_dir, data_list_name)
+    if not os.path.exists(sub_directory):
+        os.makedirs(sub_directory)
+
+    # 遍历列表中的元组
+    for index, (img_paths, pid, _) in enumerate(data_list):
+        # 创建文件夹名
+        folder_name = f"{index:04d}_{pid}"
+        folder_path = os.path.join(sub_directory, folder_name)
+
+        # 如果文件夹不存在，则创建
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
+        # 复制图片到文件夹中
+        for img_path in img_paths:
+            shutil.copy2(img_path, folder_path)
 class Mars(object):
     """
     MARS
@@ -88,6 +117,14 @@ class Mars(object):
                                                                                                 home_dir='bbox_test',
                                                                                                 relabel=False,
                                                                                                 min_seq_len=min_seq_len)
+
+
+        # new_data_root = '../data/MARS_tracklets'
+        # #copy_images_to_folders(new_data_root, train)
+        # copy_images_to_folders(new_data_root, "train", train)
+        # copy_images_to_folders(new_data_root, "query", query)
+        # copy_images_to_folders(new_data_root, "gallery", gallery)
+
 
         num_imgs_per_tracklet = num_train_imgs + num_query_imgs + num_gallery_imgs
         min_num = np.min(num_imgs_per_tracklet)
