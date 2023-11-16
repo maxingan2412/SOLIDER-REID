@@ -367,7 +367,7 @@ def evaluate(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=21):
 def extract_features(data_loader, model, use_gpu=True, pool='avg'):
     features_list, pids_list, camids_list = [], [], []
     count = 0
-    max_batches = 100
+    max_batches = 999999
 
 
 
