@@ -11,7 +11,7 @@ fi
 LOG_NAME=$1
 
 # 设置日志文件夹名称（你可以根据需要修改）
-LOG_FOLDER="shell_lamar_log"
+LOG_FOLDER="shell_lamar_log_prid"
 
 # 创建日志文件夹，如果不存在
 mkdir -p "$LOG_FOLDER"
@@ -29,13 +29,13 @@ BASE_LR=$(echo "scale=10; 0.0002 * ($IMS_PER_BATCH / 16)" | bc)
 # 使用nohup在后台执行训练命令，并将所有输出（包括错误输出）重定向到日志文件, 注意swin中的device_id必须在yml设置。
 # 执行您的 python 命令
 nohup python train.py \
---config_file configs/mars/swin_base.yml \
+--config_file configs/prid/swin_base.yml \
 MODEL.PRETRAIN_CHOICE 'self' \
 MODEL.PRETRAIN_PATH 'pretrained_model/checkpoint_tea.pth' \
-OUTPUT_DIR './log/mars/swin_base' \
-SOLVER.BASE_LR $BASE_LR \
+OUTPUT_DIR './log/prid/swin_base' \
+SOLVER.BASE_LR 0.001 \
 SOLVER.OPTIMIZER_NAME 'SGD' \
-SOLVER.MAX_EPOCHS 122 \
+SOLVER.MAX_EPOCHS 240 \
 SOLVER.CHECKPOINT_PERIOD 121 \
 SOLVER.EVAL_PERIOD 30 \
 MODEL.SEMANTIC_WEIGHT 0.2 \

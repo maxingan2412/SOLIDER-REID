@@ -12,6 +12,8 @@ import torch.distributed as dist
 from .mm import MM
 from .MARS_dataset import Mars
 from .mars_pose import MarsPose
+from .iLDSVID import iLIDSVID
+from .PRID_dataset import PRID
 
 from torch.utils.data import DataLoader
 from PIL import Image, ImageFile
@@ -96,6 +98,9 @@ __factory = {
     'mm': MM,
     'mars': Mars,
     'marspose': MarsPose,
+    #########
+    'iLIDSVID':iLIDSVID,
+    'PRID':PRID,
 }
 
 def train_collate_fn(batch):

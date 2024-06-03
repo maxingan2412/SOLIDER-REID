@@ -68,6 +68,7 @@ class Mars(object):
 
     # root  ='MARS' #'/home2/zwjx97/STE-NVAN-master/MARS' #"/home/aishahalsehaim/Desktop/STE-NVAN-master/MARS"
     root = '../data/MARS'
+    #root = '../data/MARS_NODE04/MARS'
 
     train_name_path = osp.join(root, 'info/train_name.txt')
     test_name_path = osp.join(root, 'info/test_name.txt')

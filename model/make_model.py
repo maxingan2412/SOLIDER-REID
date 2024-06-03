@@ -13,6 +13,7 @@ import random
 #import faiss
 from kmeans_pytorch import kmeans
 
+
 class SelfAttentionPooling(nn.Module):
     """
     Implementation of SelfAttentionPooling
@@ -124,8 +125,6 @@ class SelfAttentionPooling(nn.Module):
 #     return masks, mask_idxs
 
 
-import torch
-from kmeans_pytorch import kmeans
 
 
 def get_instance_feature_or_global(instance_features, idx, global_feature):
@@ -133,6 +132,9 @@ def get_instance_feature_or_global(instance_features, idx, global_feature):
         return torch.mean(instance_features[idx], dim=1)
     else:
         return global_feature
+
+
+
 
 def get_mask(features, clsnum):
     device = features.device
@@ -791,7 +793,7 @@ class build_mars_transformer(nn.Module):
 
 
 
-        if clusting_feature == 1 and self.training :
+        if clusting_feature == 1 :
             featmap_last = featmaps[-1]
             featmap_last = featmap_last.view(b,t,featmap_last.size(1),featmap_last.size(2),featmap_last.size(3))
             part1_features = []
@@ -829,7 +831,7 @@ class build_mars_transformer(nn.Module):
             part1_features = torch.stack(part1_features)
             part2_features = torch.stack(part2_features)
             part3_features = torch.stack(part3_features)
-        elif clusting_feature == 2 and self.training:
+        elif clusting_feature == 2:
             featmap_last = featmaps[-1]
             featmap_last = featmap_last.view(b, t, featmap_last.size(1), featmap_last.size(2), featmap_last.size(3))
             I1_features = []
@@ -894,14 +896,14 @@ class build_mars_transformer(nn.Module):
                 global_feat = self.fcneck(global_feat)
             feat = self.bottleneck(global_feat)
             feat_cls = self.dropout(feat)
-            if clusting_feature == 1 and self.training:
+            if clusting_feature == 1 :
                 part1_feat = self.bottleneck(part1_features)
                 part2_feat = self.bottleneck(part2_features)
                 part3_feat = self.bottleneck(part3_features)
                 part1_feat_cls = self.dropout(part1_feat)
                 part2_feat_cls = self.dropout(part2_feat)
                 part3_feat_cls = self.dropout(part3_feat)
-            elif clusting_feature == 2 and self.training:
+            elif clusting_feature == 2:
                 I1_feat = self.bottleneck(I1_features)
                 I2_feat = self.bottleneck(I2_features)
                 I3_feat = self.bottleneck(I3_features)
@@ -921,7 +923,7 @@ class build_mars_transformer(nn.Module):
                         cls_score_part2 = self.classifier(part2_feat_cls)
                         cls_score_part3 = self.classifier(part3_feat_cls)
                         return [cls_score,cls_score_part1,cls_score_part2,cls_score_part3], [global_feat,part1_features,part2_features,part3_features], featmaps
-                    elif clusting_feature == 2:
+                    elif clusting_feature == 2: #这里不代表PART的数量 聚类应该都是分成了三类
                         cls_score = self.classifier(feat_cls)
                         cls_score_I1 = self.classifier(I1_feat_cls)
                         cls_score_I2 = self.classifier(I2_feat_cls)
@@ -939,18 +941,35 @@ class build_mars_transformer(nn.Module):
                 # output cls_score tensor bs pid_num(625) , global_feat bs 1024, featmaps list 4 features 128 96 32 ,  256 48 16, 512 24 8, 1024 12 4
                 #return cls_score, global_feat, featmaps  # global feature for triplet loss,输出位
             else:
+                # if self.neck_feat == 'after':
+                #     #print("Test with feature after BN")
+                #     return feat, featmaps
+                # else:
+                #     #print("Test with feature before BN")
+                #     # if clusting_feature:
+                #     #     return global_feat + (part1_features + part2_features + part3_features) / 3 , featmaps
+                #     # else:
+                #     #     return global_feat, featmaps
+                #
+                #     return global_feat, featmaps #输出位
+
                 if self.neck_feat == 'after':
-                    #print("Test with feature after BN")
+                    # print("Test with feature after BN")
                     return feat, featmaps
                 else:
                     #print("Test with feature before BN")
-                    # if clusting_feature:
-                    #     return global_feat + (part1_features + part2_features + part3_features) / 3 , featmaps
-                    # else:
-                    #     return global_feat, featmaps
+                    if clusting_feature == 1:
+                        return global_feat + (part1_features + part2_features + part3_features) / 3 , featmaps
+                    elif clusting_feature == 2:
+                        return global_feat + (I1_features + I2_features + I3_features + I4_features) / 4, featmaps
+                    else:
+                        if not temporal_attention:
+                            return global_feat, featmaps
+                        # else:
+                        #     return global_feat, featmaps, a_val
 
-                    return global_feat, featmaps #输出位
-        # else:
+
+                    #return global_feat, featmaps  # 输出位
 
 
 
@@ -1493,7 +1512,7 @@ __factory_T_type = {
 def make_model(cfg, num_class, camera_num, view_num, semantic_weight):
     if cfg.MODEL.NAME == 'transformer':
 
-        if cfg.DATASETS.NAMES == 'mars':
+        if cfg.DATASETS.NAMES == 'mars' or cfg.DATASETS.NAMES == 'iLIDSVID' or cfg.DATASETS.NAMES == 'PRID' :
             model = build_mars_transformer(num_class, camera_num, view_num, cfg, __factory_T_type, semantic_weight)
             print('===========building mars transformer===========')
 

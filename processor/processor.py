@@ -367,7 +367,7 @@ def evaluate(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=21):
 def extract_features(data_loader, model, use_gpu=True, pool='avg'):
     features_list, pids_list, camids_list = [], [], []
     count = 0
-    max_batches = 100
+    max_batches = 999999
 
 
 
@@ -709,7 +709,7 @@ def do_mars_train(cfg,
 
     evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
     scaler = amp.GradScaler()
-    clusting_feature = 2  ##############混合的feature
+    clusting_feature = 1  ##############混合的feature
     temporal_attention = False
     print('clusting_feature',clusting_feature,'temporal_attention',temporal_attention)
 
@@ -759,8 +759,8 @@ def do_mars_train(cfg,
                     loss2 = loss_fn(score[2], feat[2], target, target_cam)
                     loss3 = loss_fn(score[3], feat[3], target, target_cam)
                     loss4 = loss_fn(score[4], feat[4], target, target_cam)
-                    # loss = loss + (loss1 + loss2 + loss3 + loss4) / 4
-                    loss = loss + loss1 + loss2 + loss3 + loss4
+                    loss = loss + (loss1 + loss2 + loss3 + loss4) / 4
+                    #loss = loss + loss1 + loss2 + loss3 + loss4
                 else:
                     if not temporal_attention:
                         loss = loss_fn(score, feat, target, target_cam) #实际没用上 target_cam，vid里面的loss也没用和这个

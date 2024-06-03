@@ -70,7 +70,7 @@ if __name__ == '__main__':
 
     os.environ['CUDA_VISIBLE_DEVICES'] = cfg.MODEL.DEVICE_ID
 
-    if cfg.DATASETS.NAMES == 'mars':
+    if cfg.DATASETS.NAMES == 'mars' or cfg.DATASETS.NAMES == 'iLIDSVID' or cfg.DATASETS.NAMES == 'PRID' :
         train_loader, num_query, num_classes, camera_num, view_num, q_val_set, g_val_set = make_mars_dataloader(cfg)
     elif cfg.DATASETS.NAMES == 'marspose':
         train_loader, num_query, num_classes, camera_num, view_num, q_val_set, g_val_set = make_marspose_dataloader(cfg)
@@ -108,7 +108,7 @@ if __name__ == '__main__':
                                       cfg.SOLVER.WARMUP_FACTOR,
                                       cfg.SOLVER.WARMUP_EPOCHS, cfg.SOLVER.WARMUP_METHOD)
 
-    if cfg.DATASETS.NAMES == 'mars':
+    if cfg.DATASETS.NAMES == 'mars' or cfg.DATASETS.NAMES == 'iLIDSVID' or cfg.DATASETS.NAMES == 'PRID' :
         do_mars_train(cfg, model, center_criterion, train_loader, q_val_set,g_val_set,optimizer, optimizer_center, scheduler, loss_func, num_query, args.local_rank)
     elif cfg.DATASETS.NAMES == 'marspose':
         do_marspose_train(cfg, model, center_criterion, train_loader, q_val_set,g_val_set,optimizer, optimizer_center, scheduler, loss_func, num_query, args.local_rank)
