@@ -686,7 +686,7 @@ class build_mars_transformer(nn.Module):
             view_num = 0
 
         convert_weights = True if pretrain_choice == 'imagenet' else False
-        self.base = factory[cfg.MODEL.TRANSFORMER_TYPE](img_size=cfg.INPUT.SIZE_TRAIN, drop_path_rate=cfg.MODEL.DROP_PATH, drop_rate= cfg.MODEL.DROP_OUT,attn_drop_rate=cfg.MODEL.ATT_DROP_RATE, pretrained=model_path, convert_weights=convert_weights, semantic_weight=semantic_weight)
+        self.base = factory[cfg.MODEL.TRANSFORMER_TYPE](img_size=cfg.INPUT.SIZE_TRAIN, drop_path_rate=cfg.MODEL.DROP_PATH, drop_rate= cfg.MODEL.DROP_OUT,attn_drop_rate=cfg.MODEL.ATT_DROP_RATE, pretrained=model_path, convert_weights=convert_weights, semantic_weight=semantic_weight,camera_num=camera_num)
         if model_path != '':
             self.base.init_weights(model_path)
         self.in_planes = self.base.num_features[-1]
@@ -747,12 +747,24 @@ class build_mars_transformer(nn.Module):
         t=x.size(1) # seq 4
         x = x.view(b * t, x.size(2), x.size(3), x.size(4)) #[32,4,3,256,128] --> [128,3,256,128]
 
-        video = False
-        if video:
-            global_feat, featmaps = self.base(x,batchsize=b,seq_len=t,video=video) #如果是swin global 对应这 vid里的feat 也就是再来个 classifier就到score了
-        else:
 
-            global_feat, featmaps = self.base(x) #如果是swin global 对应这 vid里的feat 也就是再来个 classifier就到score了
+        video = False
+        # if video:
+        #     global_feat, featmaps = self.base(x,batchsize=b,seq_len=t,video=video) #如果是swin global 对应这 vid里的feat 也就是再来个 classifier就到score了
+        # else:
+        #
+        #     global_feat, featmaps = self.base(x) #如果是swin global 对应这 vid里的feat 也就是再来个 classifier就到score了
+
+        if video:
+            if not self.training:
+                global_feat, featmaps = self.base(x, batchsize=b, seq_len=t,video=video)  # 如果是swin global 对应这 vid里的feat 也就是再来个 classifier就到score了
+            else:
+                global_feat, featmaps = self.base(x, batchsize=b, seq_len=t, video=video,cam_label=cam_label)
+        else:
+            if not self.training:
+                global_feat, featmaps = self.base(x)  # 如果是swin global 对应这 vid里的feat 也就是再来个 classifier就到score了
+            else:
+                global_feat, featmaps = self.base(x,batchsize=b, seq_len=t,cam_label=cam_label)
 
         # ####随便混合一下
         # featmap_last = featmaps[-1]
@@ -792,7 +804,7 @@ class build_mars_transformer(nn.Module):
                 global_feat = torch.mean(global_feat.view(-1, t, 1024), dim=1)
 
 
-
+        #1 2 都是不同的混合方式
         if clusting_feature == 1 :
             featmap_last = featmaps[-1]
             featmap_last = featmap_last.view(b,t,featmap_last.size(1),featmap_last.size(2),featmap_last.size(3))

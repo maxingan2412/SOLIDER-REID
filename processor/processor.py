@@ -709,7 +709,10 @@ def do_mars_train(cfg,
 
     evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
     scaler = amp.GradScaler()
-    clusting_feature = 1  ##############混合的feature
+
+
+
+    clusting_feature = 0  ##############混合的feature
     temporal_attention = False
     print('clusting_feature',clusting_feature,'temporal_attention',temporal_attention)
 

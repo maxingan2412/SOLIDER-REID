@@ -63,3 +63,7 @@ python -u train.py --config_file configs/mars/swin_base.yml MODEL.PRETRAIN_CHOIC
 
 tar cf - alldata/ | pv -s $(du -sb alldata/ | awk '{print $1}') | pbzip2 -p8 > /home/ma1/work
 tar cf - data/ | pv -s $(du -sb data/ | awk '{print $1}') | gzip > data.tar.gz
+
+python -u train.py --config_file configs/mars/swin_base.yml MODEL.PRETRAIN_CHOICE 'self' MODEL.PRETRAIN_PATH 'pretrained_model/checkpoint_tea.pth' OUTPUT_DIR './log/mars/swin_base' SOLVER.BASE_LR 0.0002 SOLVER.OPTIMIZER_NAME 'SGD' SOLVER.MAX_EPOCHS 120 MODEL.SEMANTIC_WEIGHT 0.2 SOLVER.EVAL_PERIOD 20 DATALOADER.NUM_WORKERS 24 SOLVER.IMS_PER_BATCH 24
+
+./experiment.sh withcamerasolider python -u train.py --config_file configs/mars/swin_base.yml MODEL.PRETRAIN_CHOICE 'self' MODEL.PRETRAIN_PATH 'pretrained_model/checkpoint_tea.pth' OUTPUT_DIR './log/mars/swin_base' SOLVER.BASE_LR 0.0002 SOLVER.OPTIMIZER_NAME 'SGD' SOLVER.MAX_EPOCHS 120 MODEL.SEMANTIC_WEIGHT 0.2 SOLVER.EVAL_PERIOD 20 DATALOADER.NUM_WORKERS 48 SOLVER.IMS_PER_BATCH 24
